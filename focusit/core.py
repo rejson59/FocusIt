@@ -1197,13 +1197,24 @@ def suspend_processes(infos: list[ProcessInfo],
     return done
 
 
+_SUSPENDED_STATUSES = {psutil.STATUS_STOPPED,
+                       getattr(psutil, "STATUS_SUSPENDED", "suspended")}
+
+
+def is_suspended(proc: "psutil.Process") -> bool:
+    try:
+        return proc.status() in _SUSPENDED_STATUSES
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+
+
 def resume_processes(pids: Iterable[int],
                      log: Callable[[str], None] = print) -> int:
     count = 0
     for pid in pids:
         try:
             proc = psutil.Process(pid)
-            if proc.status() == psutil.STATUS_STOPPED:
+            if is_suspended(proc):
                 proc.resume()
                 count += 1
                 log(f"Odmrożono proces PID {pid}.")
