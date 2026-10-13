@@ -144,10 +144,13 @@ DEFAULT_SETTINGS = {
     "restore_power_plan": True,
     "keep_always": ["discord.exe"],
     "confirm_aggressive_mode": True,
+<<<<<<< HEAD
     "auto_session": False,          # wykrywaj start gry z biblioteki i sam startuj sesję
     "auto_stop": True,              # kończ auto-sesję, gdy gra zostanie zamknięta
     "show_session_widget": True,    # mini-widget podczas sesji
     "autostart_backup": {},         # kopie wyłączonych wpisów autostartu
+=======
+>>>>>>> origin/arena/ae6d22e5-focusit
 }
 
 
@@ -628,9 +631,13 @@ class FocusSession:
 
     def start(self, simulate: bool) -> ExecutionResult:
         self.simulate = simulate
+<<<<<<< HEAD
         stats = get_system_stats()
         self.ram_before_mb = stats["ram_available_mb"]
         self.processes_before = stats["process_count"]
+=======
+        self.ram_before_mb = get_system_stats()["ram_available_mb"]
+>>>>>>> origin/arena/ae6d22e5-focusit
         if self.plan is None:
             self.build_plan()
         self.log(f"Plan sesji „{self.preset.get('name')}”: {self.plan.summary()}")
@@ -686,8 +693,11 @@ class FocusSession:
             "estimated_freed_mb": self.plan.estimated_freed_mb if self.plan else 0,
             "ram_available_before_mb": self.ram_before_mb,
             "ram_available_after_mb": ram_after,
+<<<<<<< HEAD
             "processes_before": getattr(self, "processes_before", 0),
             "processes_after": get_system_stats()["process_count"],
+=======
+>>>>>>> origin/arena/ae6d22e5-focusit
             "restored_apps": restored,
             "simulate": self.simulate,
             "date": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -720,7 +730,10 @@ class FocusStore:
         self.history_file = self.dir / "history.json"
         self.presets: list[dict] = copy.deepcopy(DEFAULT_PRESETS)
         self.settings: dict = copy.deepcopy(DEFAULT_SETTINGS)
+<<<<<<< HEAD
         self.game_profiles: dict = {}   # exe (małe litery) -> {mode, keep_apps, close_apps}
+=======
+>>>>>>> origin/arena/ae6d22e5-focusit
         self.load()
 
     def load(self) -> None:
@@ -730,12 +743,16 @@ class FocusStore:
                 if data.get("presets"):
                     self.presets = data["presets"]
                 self.settings.update(data.get("settings", {}))
+<<<<<<< HEAD
                 self.game_profiles = data.get("game_profiles", {})
+=======
+>>>>>>> origin/arena/ae6d22e5-focusit
             except (json.JSONDecodeError, OSError):
                 pass
 
     def save(self) -> None:
         self.config_file.write_text(
+<<<<<<< HEAD
             json.dumps({"presets": self.presets, "settings": self.settings,
                         "game_profiles": self.game_profiles},
                        ensure_ascii=False, indent=2), encoding="utf-8")
@@ -748,6 +765,11 @@ class FocusStore:
             self.game_profiles[exe.lower()] = profile
             self.save()
 
+=======
+            json.dumps({"presets": self.presets, "settings": self.settings},
+                       ensure_ascii=False, indent=2), encoding="utf-8")
+
+>>>>>>> origin/arena/ae6d22e5-focusit
     def get_preset(self, name: str) -> Optional[dict]:
         return next((p for p in self.presets if p["name"] == name), None)
 
@@ -781,6 +803,7 @@ class FocusStore:
             except (json.JSONDecodeError, OSError):
                 return []
         return []
+<<<<<<< HEAD
 
 
 # ---------------------------------------------------------------------------
@@ -1066,3 +1089,5 @@ def create_restore_point(description: str = "FocusIt - przed sesja optymalizacji
                 "administrator; Windows pozwala na 1 punkt na 24 h).")
     except Exception as exc:
         return f"Punkt przywracania: błąd ({exc})."
+=======
+>>>>>>> origin/arena/ae6d22e5-focusit

@@ -66,6 +66,7 @@ python FocusIt.py
 
 > Wskazówka: dla pełnego efektu (priorytet procesów, plan zasilania) uruchom program jako administrator — prawy przycisk myszy → *Uruchom jako administrator*.
 
+<<<<<<< HEAD
 ## 🖥️ Co potrafi program (v1.1)
 
 - **Panel gry** — statystyki CPU/RAM/GPU na żywo z **wykresem**, lista najcięższych procesów, wybór gry, presetów i trybu, wielki przycisk start/stop sesji, dziennik zdarzeń,
@@ -75,6 +76,14 @@ python FocusIt.py
 - **🚀 Optymalizacja** — czyszczenie plików tymczasowych z podglądem, menedżer autostartu Windows (wyłączanie w pełni odwracalne), tworzenie punktu przywracania systemu,
 - **Automatyzacja** — opcjonalna **auto-sesja**: FocusIt sam wykrywa start gry z biblioteki i włącza jej sesję, a po zamknięciu gry sam przywraca ustawienia; **mini-widget** sesji zawsze na wierzchu,
 - **Historia sesji** — ile procesów zamknięto (przed → po), ile RAM-u szacunkowo zwolniono, jak długo trwały sesje,
+=======
+## 🖥️ Co potrafi program
+
+- **Panel gry** — statystyki CPU/RAM na żywo, wybór gry, presetów i trybu, wielki przycisk start/stop sesji, dziennik zdarzeń,
+- **Procesy i izolacja** — pełny podgląd planu z uzasadnieniem każdej decyzji; dwuklik na proces dodaje go do listy „Zachowaj”,
+- **Presety** — edytor presetów wbudowanych (przez kopie) i własnych,
+- **Historia sesji** — ile procesów zamknięto, ile RAM-u szacunkowo zwolniono, jak długo trwały sesje,
+>>>>>>> origin/arena/ae6d22e5-focusit
 - **Ustawienia** — globalna lista „Zachowaj”, przywracanie aplikacji i planu zasilania po sesji, potwierdzenia bezpieczeństwa,
 - zapis ustawień w `%APPDATA%\FocusIt` (config + historia).
 
