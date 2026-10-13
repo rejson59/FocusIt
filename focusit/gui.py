@@ -11,23 +11,31 @@ from collections import deque
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .core import (FocusSession, FocusStore, GameEntry, ProcessInfo,
-                   check_for_update, create_restore_point, execute_temp_clean,
-                   find_target_pid, get_gpu_stats, get_system_stats, launch_app,
+from .core import (SERVICE_CANDIDATES, FocusSession, FocusStore, GameEntry,
+                   ProcessInfo, check_for_update, compute_health_score,
+                   create_restore_point, execute_temp_clean, find_target_pid,
+                   flush_dns, get_gpu_stats, get_system_stats, launch_app,
                    list_autostart, list_processes, parse_affinity,
                    preview_temp_clean, recover_previous_session,
                    scan_game_library, set_autostart_enabled)
 
-BG = "#0B0E14"
-PANEL = "#141926"
-CARD = "#1B2233"
-CARD_HOVER = "#232C42"
-TEXT = "#E8ECF4"
+BG = "#080A10"
+PANEL = "#0F1420"
+CARD = "#171E2E"
+CARD_HOVER = "#212B42"
+TEXT = "#EDF1F9"
 MUTED = "#8A94A8"
 ACCENT = "#8B5CF6"      # fiolet — kolor marki
+CYAN = "#22D3EE"        # drugi kolor marki (gradient)
 GREEN = "#22C55E"       # start / gry
 RED = "#EF4444"
 GOLD = "#F5C518"
+
+
+def _lerp_color(c1: str, c2: str, t: float) -> str:
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{int(a[i] + (b[i] - a[i]) * t):02x}" for i in range(3))
 
 PAGES = [("panel", "🏠  Panel gry"), ("biblioteka", "🎮  Biblioteka gier"),
          ("presety", "🎯  Presety"),
@@ -176,10 +184,14 @@ class FocusItApp:
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
 
+        from . import __version__
+        self.version = __version__
         tk.Label(sidebar, text="⚡ FocusIt", bg=PANEL, fg=TEXT,
-                 font=("Segoe UI", 20, "bold")).pack(pady=(22, 2), padx=18, anchor="w")
-        tk.Label(sidebar, text="100% mocy dla Twojej gry", bg=PANEL, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(padx=18, anchor="w")
+                 font=("Segoe UI", 21, "bold")).pack(pady=(22, 0), padx=18, anchor="w")
+        tk.Label(sidebar, text="100% mocy dla Twojej gry", bg=PANEL, fg=CYAN,
+                 font=("Segoe UI", 9, "bold")).pack(padx=18, anchor="w")
+        tk.Label(sidebar, text=f"wersja {__version__}", bg=PANEL, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(padx=18, pady=(2, 12), anchor="w")
 
         self.nav_buttons: dict[str, tk.Button] = {}
         for key, label in PAGES:
@@ -228,25 +240,32 @@ class FocusItApp:
 
     # ------------------------------------------------------------- PANEL GRY
     def _build_panel_page(self, f: tk.Frame) -> None:
-        self._header(f, "🎮 Panel gry",
-                     "Wybierz grę, sprawdź podgląd planu i uruchom sesję. "
-                     "FocusIt zamknie wszystko, co nie jest grze potrzebne — "
-                     "ale nigdy nie ruszy procesów systemowych Windows.")
+        # --- baner z gradientem ---
+        self.banner = tk.Canvas(f, bg=BG, height=86, highlightthickness=0)
+        self.banner.pack(fill="x", padx=22, pady=(14, 4))
+        self.root.after(120, self._draw_banner)
 
         # --- statystyki ---
         stats = tk.Frame(f, bg=BG)
         stats.pack(fill="x", padx=22, pady=6)
         self.stat_labels: dict[str, tk.Label] = {}
+        self.stat_bars: dict[str, tk.Canvas] = {}
+        self._stat_pct: dict[str, float] = {}
         for key, title in [("cpu", "CPU"), ("ram", "RAM"), ("gpu", "GPU / temp."),
                            ("free", "Wolny RAM"), ("procs", "Procesy")]:
-            card = tk.Frame(stats, bg=CARD)
+            card = tk.Frame(stats, bg=CARD, highlightthickness=1,
+                            highlightbackground="#232C42")
             card.pack(side="left", fill="x", expand=True, padx=4)
             tk.Label(card, text=title, bg=CARD, fg=MUTED,
                      font=("Segoe UI", 8, "bold")).pack(pady=(8, 0))
             lbl = tk.Label(card, text="—", bg=CARD, fg=TEXT,
                            font=("Segoe UI", 15, "bold"))
-            lbl.pack(pady=(0, 8))
+            lbl.pack(pady=(0, 1))
+            bar = tk.Canvas(card, bg=CARD, height=5, highlightthickness=0)
+            bar.pack(fill="x", padx=10, pady=(0, 9))
             self.stat_labels[key] = lbl
+            self.stat_bars[key] = bar
+            self._stat_pct[key] = 0.0
 
         # --- wykres na żywo + top procesów ---
         chart_box = tk.Frame(f, bg=CARD)
@@ -419,9 +438,23 @@ class FocusItApp:
                      bg=BG, fg=MUTED, font=("Segoe UI", 11),
                      wraplength=700, justify="left").pack(padx=8, pady=12, anchor="w")
         cols = 4
+        self._tile_frames: dict[str, tk.Frame] = {}
         for i, game in enumerate(self.games):
-            tile = tk.Frame(self.lib_frame, bg=CARD)
+            tile = tk.Frame(self.lib_frame, bg=CARD, highlightthickness=2,
+                            highlightbackground="#232C42")
             tile.grid(row=i // cols, column=i % cols, padx=6, pady=6, sticky="nsew")
+            self._tile_frames[game.exe.lower()] = tile
+
+            def hover(_e, t=tile):
+                t.configure(highlightbackground=CYAN)
+
+            def unhover(_e, t=tile, g=game):
+                sel = self.selected_game and \
+                    self.selected_game.exe.lower() == g.exe.lower()
+                t.configure(highlightbackground=ACCENT if sel else "#232C42")
+
+            tile.bind("<Enter>", hover)
+            tile.bind("<Leave>", unhover)
             img = self._cover_for(game)
             btn = tk.Button(tile, image=img if img else None,
                             text="" if img else f"🎮\n{game.name}",
@@ -452,6 +485,9 @@ class FocusItApp:
 
     def _select_game(self, game: GameEntry) -> None:
         self.selected_game = game
+        for key, tile in getattr(self, "_tile_frames", {}).items():
+            tile.configure(highlightbackground=ACCENT
+                           if key == game.exe.lower() else "#232C42")
         if game.exe:
             self._custom_exe = game.exe
             self.target_combo.set(Path(game.exe).name)
@@ -539,6 +575,46 @@ class FocusItApp:
         self._header(f, "🚀 Optymalizacja komputera",
                      "Dodatkowe, bezpieczne porządki. Wszystko z podglądem "
                      "przed wykonaniem i wszystko odwracalne.")
+        # kondycja PC
+        hbox = tk.LabelFrame(f, text=" Wynik kondycji PC ", bg=BG, fg=ACCENT,
+                             font=("Segoe UI", 10, "bold"))
+        hbox.pack(fill="x", padx=22, pady=8)
+        hrow = tk.Frame(hbox, bg=BG)
+        hrow.pack(fill="x", padx=12, pady=8)
+        self.health_score_label = tk.Label(hrow, text="—", bg=BG, fg=GREEN,
+                                           font=("Segoe UI", 30, "bold"))
+        self.health_score_label.pack(side="left")
+        self.health_tips = tk.Label(hrow, text="Kliknij „Przeanalizuj”, aby "
+                                               "ocenić kondycję komputera.",
+                                    bg=BG, fg=TEXT, font=("Segoe UI", 9),
+                                    justify="left", wraplength=640)
+        self.health_tips.pack(side="left", padx=14)
+        tk.Button(hrow, text="🔎 Przeanalizuj", bg=ACCENT, fg="white",
+                  relief="flat", padx=14, pady=6, cursor="hand2",
+                  font=("Segoe UI", 10, "bold"),
+                  command=self._analyze_health).pack(side="right")
+        # usługi na czas sesji + DNS
+        sbox = tk.LabelFrame(f, text=" Na czas sesji gry (Windows, wymaga administratora) ",
+                             bg=BG, fg=ACCENT, font=("Segoe UI", 10, "bold"))
+        sbox.pack(fill="x", padx=22, pady=8)
+        tk.Label(sbox, text="Wstrzymaj te usługi podczas sesji — same wrócą "
+                            "po jej zakończeniu:", bg=BG, fg=TEXT,
+                 font=("Segoe UI", 9)).pack(padx=12, pady=(8, 2), anchor="w")
+        self.service_vars: dict[str, tk.BooleanVar] = {}
+        chosen = set(self.store.settings.get("stop_services", []))
+        for name, desc in SERVICE_CANDIDATES.items():
+            var = tk.BooleanVar(value=name in chosen)
+            self.service_vars[name] = var
+            tk.Checkbutton(sbox, text=f"{desc} ({name})", variable=var,
+                           bg=BG, fg=TEXT, activebackground=BG,
+                           activeforeground=TEXT, selectcolor=CARD,
+                           command=self._save_service_choices).pack(
+                               padx=20, anchor="w")
+        tk.Button(sbox, text="🌐 Wyczyść pamięć podręczną DNS (ping)",
+                  bg=CARD, fg=TEXT, relief="flat", padx=14, pady=5,
+                  cursor="hand2",
+                  command=lambda: messagebox.showinfo("FocusIt", flush_dns(self.log))
+                  ).pack(padx=12, pady=8, anchor="w")
         # pliki tymczasowe
         box = tk.LabelFrame(f, text=" Pliki tymczasowe (folder Temp użytkownika) ",
                             bg=BG, fg=ACCENT, font=("Segoe UI", 10, "bold"))
@@ -604,6 +680,24 @@ class FocusItApp:
         tk.Button(row4, text="📥 Importuj presety z pliku…", bg=CARD, fg=TEXT,
                   relief="flat", padx=14, pady=5, cursor="hand2",
                   command=self._import_presets).pack(side="left", padx=8)
+
+    def _save_service_choices(self) -> None:
+        self.store.settings["stop_services"] = [
+            name for name, var in self.service_vars.items() if var.get()]
+        self.store.save()
+        self.log("Zapisano wybór usług wstrzymywanych na czas sesji.")
+
+    def _analyze_health(self) -> None:
+        stats = get_system_stats()
+        temp = preview_temp_clean()
+        autostart = len(list_autostart())
+        heavy = [p for p in list_processes()
+                 if p.exe and p.memory_mb > 300][:6]
+        score, tips = compute_health_score(stats, temp, autostart, heavy)
+        color = GREEN if score >= 75 else (GOLD if score >= 50 else RED)
+        self.health_score_label.configure(text=f"{score}", fg=color)
+        self.health_tips.configure(text="• " + "\n• ".join(tips))
+        self.log(f"Wynik kondycji PC: {score}/100.")
 
     def _scan_temp(self) -> None:
         r = preview_temp_clean()
@@ -910,6 +1004,28 @@ class FocusItApp:
         self.log_box.insert("end", f"[{ts}] {msg}\n")
         self.log_box.see("end")
 
+    def _draw_banner(self) -> None:
+        c = self.banner
+        w = max(c.winfo_width(), 600)
+        h = 86
+        c.delete("all")
+        step = 6
+        for x in range(0, w, step):
+            c.create_line(x, 0, x, h, fill=_lerp_color("#2A1650", "#0B3542", x / w),
+                          width=step)
+        c.create_text(22, 26, anchor="w", text="Gotowy do gry?",
+                      fill="white", font=("Segoe UI", 19, "bold"))
+        c.create_text(22, 56, anchor="w",
+                      text="Jeden klik i komputer pracuje tylko dla Twojej gry.",
+                      fill="#C9D4EA", font=("Segoe UI", 10))
+        active = bool(self.session and self.session.active)
+        pill = GREEN if active else ACCENT
+        label = "● SESJA AKTYWNA" if active else "● GOTOWY"
+        x0 = w - 190
+        c.create_oval(x0, 28, x0 + 12, 40, fill=pill, outline="")
+        c.create_text(x0 + 20, 34, anchor="w", text=label, fill="white",
+                      font=("Segoe UI", 10, "bold"))
+
     def _draw_chart(self) -> None:
         c = self.chart
         w = max(c.winfo_width(), 300)
@@ -962,12 +1078,29 @@ class FocusItApp:
             self.cpu_hist.append(s["cpu_percent"])
             self.ram_hist.append(s["ram_percent"])
             self._draw_chart()
+            self._stat_pct.update({
+                "cpu": s["cpu_percent"], "ram": s["ram_percent"],
+                "free": (s["ram_available_mb"] /
+                         max(s["ram_total_gb"] * 1024, 1) * 100),
+                "procs": min(s["process_count"] / 2, 100)})
+            for key, pct in self._stat_pct.items():
+                bar = self.stat_bars[key]
+                bw = max(bar.winfo_width(), 60)
+                bar.delete("all")
+                bar.create_rectangle(0, 0, bw, 5, fill="#242D42", outline="")
+                color = GREEN if pct < 60 else (GOLD if pct < 85 else RED)
+                if key == "free":
+                    color = GREEN if pct > 25 else RED
+                bar.create_rectangle(0, 0, bw * min(pct, 100) / 100, 5,
+                                     fill=color, outline="")
             if self._tick_count % 5 == 1:
                 self._gpu_cache = get_gpu_stats()
             g = self._gpu_cache
             self.stat_labels["gpu"].configure(
                 text=(f"{g['percent']:.0f}% / {g['temp_c']:.0f}°C" if g
                       else "— (tylko NVIDIA)"))
+            if g:
+                self._stat_pct["gpu"] = g["percent"]
             if self._tick_count % 10 == 1:
                 procs = [p for p in list_processes() if p.exe]
                 top = procs[:5]
@@ -1052,15 +1185,45 @@ class FocusItApp:
     def refresh_preset_lists(self) -> None:
         for w in self.preset_radios.winfo_children():
             w.destroy()
+        self._preset_cards: dict[str, list] = {}
         for p in self.store.presets:
-            tk.Radiobutton(self.preset_radios,
-                           text=f"{p.get('icon', '🎯')} {p['name']}",
-                           value=p["name"], variable=self.preset_var,
-                           bg=CARD, fg=TEXT, activebackground=CARD_HOVER,
-                           activeforeground=TEXT, selectcolor=ACCENT,
-                           font=("Segoe UI", 10, "bold"), padx=12, pady=6,
-                           indicatoron=False, cursor="hand2",
-                           command=self._preset_changed).pack(side="left", padx=4)
+            selected = (p["name"] == self.preset_var.get())
+            card = tk.Frame(self.preset_radios,
+                            bg=ACCENT if selected else CARD,
+                            highlightthickness=2,
+                            highlightbackground=ACCENT if selected else "#232C42")
+            card.pack(side="left", padx=4, pady=2)
+            widgets = [card]
+            for text, size, bold, color in [
+                    (p.get("icon", "🎯"), 17, False, TEXT),
+                    (p["name"], 10, True, TEXT),
+                    ("IZOLACJA" if p.get("mode") == "isolation" else "ŁAGODNY",
+                     7, True, GOLD if p.get("mode") == "isolation" else MUTED)]:
+                lbl = tk.Label(card, text=text, bg=ACCENT if selected else CARD,
+                               fg=color, font=("Segoe UI", size,
+                                               "bold" if bold else "normal"))
+                lbl.pack(padx=16, pady=(1, 0))
+                widgets.append(lbl)
+
+            def pick(_e=None, name=p["name"]):
+                self.preset_var.set(name)
+                self.refresh_preset_lists()
+
+            def hover(_e, c=card, w=widgets, name=p["name"]):
+                if self.preset_var.get() != name:
+                    for x in w:
+                        x.configure(bg=CARD_HOVER)
+
+            def unhover(_e, w=widgets, name=p["name"]):
+                if self.preset_var.get() != name:
+                    for x in w:
+                        x.configure(bg=CARD)
+
+            for x in widgets:
+                x.bind("<Button-1>", pick)
+                x.bind("<Enter>", hover)
+                x.bind("<Leave>", unhover)
+            self._preset_cards[p["name"]] = widgets
         self.preset_list.delete(0, "end")
         for p in self.store.presets:
             self.preset_list.insert("end", f"{p.get('icon', '🎯')} {p['name']}")
@@ -1307,6 +1470,7 @@ class FocusItApp:
         mode_txt = "SYMULACJA" if simulate else "NA ŻYWO"
         self.side_status.configure(
             text=f"● Sesja aktywna: {preset['name']} ({mode_txt})", fg=GREEN)
+        self._draw_banner()
         self.session_label.configure(text="⏱ Sesja: 00:00:00")
         self.log(f"=== Sesja „{preset['name']}” rozpoczęta ({mode_txt}) ===")
         if not simulate:
@@ -1328,6 +1492,7 @@ class FocusItApp:
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
         self.side_status.configure(text="● Brak aktywnej sesji", fg=MUTED)
+        self._draw_banner()
         self.session_label.configure(text="")
         self.refresh_history()
         self.refresh_targets()
@@ -1344,6 +1509,10 @@ class FocusItApp:
                 f"Zamknięte procesy: {summary['killed_count']} "
                 f"(liczba procesów: {summary.get('processes_before', '?')} → "
                 f"{summary.get('processes_after', '?')})\n"
+                f"Obciążenie procesów w tle: "
+                f"{summary.get('bg_load_before', 0):.1f}% → "
+                f"{summary.get('bg_load_after', 0):.1f}% CPU\n"
+                f"Zamrożone procesy: {summary.get('suspended_count', 0)}\n"
                 f"Szacunkowo zwolniony RAM: {summary['estimated_freed_mb']:.0f} MB\n"
                 f"Wolny RAM po sesji: {summary.get('ram_available_after_mb', 0)} MB\n"
                 f"Przywrócone aplikacje: {len(summary['restored_apps'])}")

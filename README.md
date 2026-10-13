@@ -62,13 +62,14 @@ python FocusIt.py
 
 > Wskazówka: dla pełnego efektu (priorytet procesów, plan zasilania) uruchom program jako administrator — prawy przycisk myszy → *Uruchom jako administrator*.
 
-## 🖥️ Co potrafi program (v1.2)
+## 🖥️ Co potrafi program (v1.3)
 
-- **Panel gry** — statystyki CPU/RAM/GPU na żywo z **wykresem**, lista najcięższych procesów, wybór gry, presetów i trybu, wielki przycisk start/stop sesji, dziennik zdarzeń,
+- **Panel gry** — gamingowy baner „Gotowy do gry?”, statystyki CPU/RAM/GPU na żywo z **wykresem i paskami obciążenia**, lista najcięższych procesów, presety jako klikalne karty, wielki przycisk start/stop sesji, dziennik zdarzeń,
 - **🎮 Biblioteka gier** — automatyczne wykrywanie gier ze **Steam, Epic i GOG** (z okładkami Steama), dodawanie gier ręcznie oraz **własny profil dla każdej gry** (co zachować, co zamykać, tryb sesji),
 - **Procesy i izolacja** — pełny podgląd planu z uzasadnieniem każdej decyzji; dwuklik na proces dodaje go do listy „Zachowaj”,
 - **Presety** — edytor presetów wbudowanych (przez kopie) i własnych, eksport/import presetów do pliku (możesz wysłać znajomym),
-- **🚀 Optymalizacja** — czyszczenie plików tymczasowych z podglądem, menedżer autostartu Windows (wyłączanie w pełni odwracalne), tworzenie punktu przywracania systemu,
+- **🚀 Optymalizacja** — **Wynik kondycji PC (0–100)** ze wskazówkami, czyszczenie plików tymczasowych z podglądem, menedżer autostartu Windows (wyłączanie w pełni odwracalne), wstrzymywanie usług Windows na czas sesji, flush DNS, tworzenie punktu przywracania systemu,
+- **📉 Mierzalna skuteczność** — program mierzy obciążenie procesów w tle (CPU) przed i po starcie sesji i pokazuje je w raporcie („tło: 18,4% → 2,1%”), zamiast obiecywać magiczne „+100 FPS”,
 - **Automatyzacja** — opcjonalna **auto-sesja**: FocusIt sam wykrywa start gry z biblioteki i włącza jej sesję, a po zamknięciu gry sam przywraca ustawienia; **mini-widget** sesji zawsze na wierzchu; **skrót globalny Ctrl+Alt+F**,
 - **❄ Zamrażanie procesów** — zamiast zabijać zbędne procesy możesz je zamrozić (zero zużycia CPU, bez utraty niezapisanej pracy, wracają po sesji),
 - **🛟 Bezpieczeństwo** — odzyskiwanie ustawień po awarii programu, ekran powitalny, sprawdzanie aktualizacji, inteligentne sugestie „co warto zamknąć przed grą”, powinowactwo CPU w profilu gry, wykres historii sesji,

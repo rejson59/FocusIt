@@ -151,6 +151,7 @@ DEFAULT_SETTINGS = {
     "hotkey_enabled": True,         # Ctrl+Alt+F startuje/kończy sesję
     "check_updates": True,          # sprawdzaj nowe wersje na GitHubie
     "onboarded": False,             # czy pokazano ekran powitalny
+    "stop_services": [],            # usługi Windows wstrzymywane na czas sesji
 }
 
 
@@ -635,6 +636,9 @@ class FocusSession:
         self.ram_before_mb = 0
         self._priority_pids: list[int] = []
         self.simulate = True
+        self.bg_load_before = 0.0
+        self.bg_load_after = 0.0
+        self._stopped_services: list[str] = []
 
     def build_plan(self, processes: Optional[list[ProcessInfo]] = None) -> KillPlan:
         processes = processes if processes is not None else list_processes()
@@ -655,12 +659,26 @@ class FocusSession:
         stats = get_system_stats()
         self.ram_before_mb = stats["ram_available_mb"]
         self.processes_before = stats["process_count"]
+        self.bg_load_before = measure_background_load(self.target_pid)
+        self.log(f"Obciążenie procesów w tle przed sesją: {self.bg_load_before:.1f}% CPU")
         if self.plan is None:
             self.build_plan()
         self.log(f"Plan sesji „{self.preset.get('name')}”: {self.plan.summary()}")
         self.result = execute_plan(
             self.plan, simulate=simulate, log=self.log,
             freeze=bool(self.preset.get("freeze_processes")))
+
+        if not simulate:
+            services = self.settings.get("stop_services", [])
+            if services:
+                self._stopped_services = stop_services_for_session(
+                    services, log=self.log)
+            self.bg_load_after = measure_background_load(self.target_pid)
+            self.log(f"Obciążenie procesów w tle po starcie sesji: "
+                     f"{self.bg_load_after:.1f}% CPU "
+                     f"(było {self.bg_load_before:.1f}%)")
+        else:
+            self.bg_load_after = self.bg_load_before
 
         if not simulate:
             if self.preset.get("power_high_performance"):
@@ -693,6 +711,9 @@ class FocusSession:
         duration = int(time.time() - self.started_at) if self.started_at else 0
         restored = []
         if self.active and not self.simulate:
+            if self._stopped_services:
+                start_services(self._stopped_services, log=self.log)
+                self._stopped_services = []
             if self.result and self.result.suspended:
                 n = resume_processes([p.pid for p in self.result.suspended],
                                      log=self.log)
@@ -725,6 +746,8 @@ class FocusSession:
             "ram_available_after_mb": ram_after,
             "processes_before": getattr(self, "processes_before", 0),
             "processes_after": get_system_stats()["process_count"],
+            "bg_load_before": self.bg_load_before,
+            "bg_load_after": self.bg_load_after,
             "restored_apps": restored,
             "simulate": self.simulate,
             "date": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -743,6 +766,7 @@ class FocusSession:
             "suspended_pids": [p.pid for p in
                                (self.result.suspended if self.result else [])],
             "power_guid": self.power._previous_guid,
+            "stopped_services": list(self._stopped_services),
         }
 
 
@@ -1262,6 +1286,10 @@ def recover_previous_session(store: "FocusStore",
     if suspended:
         n = resume_processes(suspended, log=log)
         messages.append(f"Odmrożono {n} procesów po poprzedniej sesji.")
+    stopped_services = state.get("stopped_services", [])
+    if stopped_services:
+        start_services(stopped_services, log=log)
+        messages.append("Przywrócono usługi wstrzymane w przerwanej sesji.")
     power_guid = state.get("power_guid")
     if power_guid:
         manager = PowerPlanManager()
@@ -1277,3 +1305,167 @@ def recover_previous_session(store: "FocusStore",
                             "w przerwanej sesji.")
     store.clear_session_state()
     return messages
+
+
+# ---------------------------------------------------------------------------
+# v1.3: pomiar obciążenia tła, usługi Windows, kondycja PC, DNS
+# ---------------------------------------------------------------------------
+
+def measure_background_load(target_pid: Optional[int] = None,
+                            sample_seconds: float = 0.35) -> float:
+    """
+    % mocy CPU zużywanej przez procesy TŁA (bez gry, bez systemu, bez FocusIt),
+    znormalizowane do 0–100%. To realny wskaźnik skuteczności sesji.
+    """
+    own = os.getpid()
+    primed: dict[int, psutil.Process] = {}
+    for p in psutil.process_iter(["pid"]):
+        try:
+            p.cpu_percent(None)
+            primed[p.pid] = p
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    time.sleep(sample_seconds)
+    total = 0.0
+    for pid, p in primed.items():
+        if pid == own or (target_pid and pid == target_pid):
+            continue
+        try:
+            info = ProcessInfo(pid=pid, name=p.name(), exe=p.exe() or "",
+                               username=_safe_username(p))
+            if is_hard_protected(info):
+                continue
+            total += p.cpu_percent(None)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return round(total / (os.cpu_count() or 1), 1)
+
+
+def _safe_username(p: "psutil.Process") -> str:
+    try:
+        return p.username() or ""
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return ""
+
+
+SERVICE_CANDIDATES = {
+    "DiagTrack": "Telemetria i diagnostyka Windows",
+    "SysMain": "SysMain (dawniej Superfetch) — wstępne ładowanie aplikacji",
+    "wuauserv": "Windows Update (aktualizacje w tle)",
+    "BITS": "Usługa inteligentnego transferu w tle (pobieranie aktualizacji)",
+}
+
+
+def _sc(args: list[str], runner) -> str:
+    try:
+        r = runner(["sc"] + args, capture_output=True, text=True, timeout=20)
+        return (r.stdout or "") + (r.stderr or "")
+    except Exception as exc:
+        return str(exc)
+
+
+def service_state(name: str, runner=subprocess.run) -> str:
+    out = _sc(["query", name], runner)
+    m = re.search(r"STATE\s+:\s+\d+\s+(\w+)", out)
+    return m.group(1).upper() if m else "UNKNOWN"
+
+
+def stop_services_for_session(names: Iterable[str],
+                              log: Callable[[str], None] = print,
+                              runner=subprocess.run) -> list[str]:
+    stopped: list[str] = []
+    if not sys.platform.startswith("win"):
+        return stopped
+    for name in names:
+        if name not in SERVICE_CANDIDATES:
+            continue
+        if service_state(name, runner) == "RUNNING":
+            _sc(["stop", name], runner)
+            time.sleep(0.4)
+            if service_state(name, runner) != "RUNNING":
+                stopped.append(name)
+                log(f"Wstrzymano usługę na czas sesji: {name} "
+                    f"({SERVICE_CANDIDATES[name]}).")
+            else:
+                log(f"Nie udało się wstrzymać usługi {name} "
+                    "(potrzebny administrator).")
+    return stopped
+
+
+def start_services(names: Iterable[str],
+                   log: Callable[[str], None] = print,
+                   runner=subprocess.run) -> None:
+    if not sys.platform.startswith("win"):
+        return
+    for name in names:
+        _sc(["start", name], runner)
+        log(f"Przywrócono usługę: {name}.")
+
+
+def flush_dns(log: Callable[[str], None] = print) -> str:
+    if sys.platform.startswith("win"):
+        try:
+            subprocess.run(["ipconfig", "/flushdns"], capture_output=True,
+                           text=True, timeout=20)
+            msg = "Wyczyszczono pamięć podręczną DNS (może pomóc na ping/lagi)."
+        except Exception as exc:
+            msg = f"Flush DNS nie powiódł się: {exc}"
+    else:
+        msg = "Flush DNS: funkcja tylko dla Windows."
+    log(msg)
+    return msg
+
+
+def compute_health_score(stats: dict, temp_preview: dict,
+                         autostart_count: int,
+                         heavy_processes: list[ProcessInfo]) -> tuple[int, list[str]]:
+    """Wynik kondycji PC 0–100 + konkretne wskazówki. Im wyżej, tym lepiej."""
+    score = 100
+    tips: list[str] = []
+    ram = stats.get("ram_percent", 0)
+    if ram > 85:
+        score -= 20
+        tips.append(f"RAM jest bardzo obciążony ({ram:.0f}%) — sesja FocusIt "
+                    "z zamykaniem/zamrażaniem procesów da tu najwięcej.")
+    elif ram > 70:
+        score -= 10
+        tips.append(f"RAM obciążony w {ram:.0f}% — warto zamykać przeglądarkę "
+                    "przed graniem.")
+    procs = stats.get("process_count", 0)
+    if procs > 180:
+        score -= 15
+        tips.append(f"Bardzo dużo procesów ({procs}) — sprawdź autostart "
+                    "i tryb izolacji.")
+    elif procs > 130:
+        score -= 8
+        tips.append(f"Sporo procesów w tle ({procs}) — tryb izolacji pomoże.")
+    temp_mb = temp_preview.get("size_mb", 0)
+    if temp_mb > 1000:
+        score -= 15
+        tips.append(f"Masz {temp_mb:.0f} MB starych plików tymczasowych — "
+                    "wyczyść je w zakładce Optymalizacja.")
+    elif temp_mb > 200:
+        score -= 7
+        tips.append(f"Pliki tymczasowe zajmują {temp_mb:.0f} MB — warto "
+                    "je czasem czyścić.")
+    if autostart_count > 12:
+        score -= 10
+        tips.append(f"Aż {autostart_count} programów startuje z Windowsem — "
+                    "wyłącz zbędne w zakładce Optymalizacja.")
+    elif autostart_count > 7:
+        score -= 5
+        tips.append(f"{autostart_count} programów w autostarcie — przejrzyj je "
+                    "w zakładce Optymalizacja.")
+    if len(heavy_processes) >= 3:
+        score -= 10
+        names = ", ".join(p.name for p in heavy_processes[:3])
+        tips.append(f"Ciężkie procesy w tle: {names} — zamknij je przed grą "
+                    "albo dodaj do presetu.")
+    elif heavy_processes:
+        score -= 5
+        tips.append(f"W tle siedzi {heavy_processes[0].name} "
+                    f"({heavy_processes[0].memory_mb:.0f} MB RAM).")
+    if not tips:
+        tips.append("Świetna kondycja! Komputer jest gotowy do gry — "
+                    "FocusIt utrzyma ten stan podczas sesji.")
+    return max(0, min(100, score)), tips

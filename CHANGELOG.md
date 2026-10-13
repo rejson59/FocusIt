@@ -1,5 +1,15 @@
 # Historia zmian FocusIt
 
+## v1.3.0 — wygląd i skuteczność
+- 🎨 **Nowy wygląd**: gradientowy baner „Gotowy do gry?”, odświeżona paleta (grafit + fiolet + cyjan), karty statystyk z paskami obciążenia, presety jako klikalne karty z podświetleniem, podświetlane kafelki gier, wskaźnik aktywnej sesji.
+- 📉 **Pomiar obciążenia procesów w tle** (CPU) przed i po starcie sesji — raport sesji pokazuje realny efekt, np. „tło: 18,4% → 2,1%”, a nie tylko zwolniony RAM.
+- 🛠 **Wstrzymywanie usług Windows na czas sesji** (telemetria DiagTrack, SysMain, Windows Update, BITS — do wyboru, wymagany administrator, usługi same wracają po sesji; są też przywracane po awarii programu).
+- ❤ **Wynik kondycji PC** (0–100) z konkretnymi wskazówkami w zakładce Optymalizacja.
+- 🌐 Przycisk czyszczenia pamięci podręcznej DNS.
+
+## v1.2.1
+- Poprawka techniczna: testy zamrażania działają też na Windowsie (wieloplatformowy proces testowy), odmrażanie rozpoznaje windowsowy status procesu zawieszonego. (Wydanie v1.2.0 nie przeszło bramek testów na Windowsie, dlatego nie miało pliku .exe.)
+
 ## v1.2.0
 - ❄ **Zamrażanie procesów** zamiast zabijania (opcja na Panelu): procesy w tle nie zjadają CPU, nic nie tracą i same wracają po sesji.
 - 🛟 **Odzyskiwanie po awarii**: jeśli FocusIt zostanie zamknięty siłą w trakcie sesji, przy następnym starcie sam odmrozi procesy, przywróci plan zasilania i ponownie otworzy zamknięte aplikacje.
