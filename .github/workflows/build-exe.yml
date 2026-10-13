@@ -5,6 +5,9 @@ on:
   push:
     tags: ["v*"]            # oraz przy każdym tagu wersji, np. v1.0.0
 
+permissions:
+  contents: write   # potrzebne, aby opublikowac .exe w Releases
+
 jobs:
   build:
     runs-on: windows-latest
@@ -34,3 +37,10 @@ jobs:
           name: FocusIt-Windows
           path: dist/FocusIt.exe
           if-no-files-found: error
+
+      - name: Publikacja FocusIt.exe w zakładce Releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ github.ref_name }} dist/FocusIt.exe --clobber 2>$null; if ($LASTEXITCODE -ne 0) { gh release create ${{ github.ref_name }} dist/FocusIt.exe --title "FocusIt ${{ github.ref_name }}" --notes "Gotowy program FocusIt dla Windows - jeden plik FocusIt.exe, bez instalacji. Pobierz FocusIt.exe z sekcji Assets ponizej i uruchom (dla pelnego efektu: jako administrator). Przy pierwszym starcie wlaczona jest SYMULACJA - program tylko pokazuje plan zamykania procesow." }
