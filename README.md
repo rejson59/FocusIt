@@ -66,7 +66,7 @@ python FocusIt.py
 
 > Wskazówka: dla pełnego efektu (priorytet procesów, plan zasilania) uruchom program jako administrator — prawy przycisk myszy → *Uruchom jako administrator*.
 
-## 🖥️ Co potrafi program (v1.5)
+## 🖥️ Co potrafi program (v1.6)
 
 - **Panel gry** — gamingowy baner „Gotowy do gry?”, statystyki CPU/RAM/GPU na żywo z **wykresem i paskami obciążenia**, lista najcięższych procesów, presety jako klikalne karty, wielki przycisk start/stop sesji, dziennik zdarzeń,
 - **🎮 Biblioteka gier** — automatyczne wykrywanie gier ze **Steam, Epic i GOG** (z okładkami Steama), dodawanie gier ręcznie oraz **własny profil dla każdej gry** (co zachować, co zamykać, tryb sesji),
@@ -74,7 +74,8 @@ python FocusIt.py
 - **Presety** — edytor presetów wbudowanych (przez kopie) i własnych, eksport/import presetów do pliku (możesz wysłać znajomym),
 - **🚀 Optymalizacja** — **Wynik kondycji PC (0–100)** ze wskazówkami, czyszczenie plików tymczasowych z podglądem, menedżer autostartu Windows (wyłączanie w pełni odwracalne), wstrzymywanie usług Windows na czas sesji, flush DNS, tworzenie punktu przywracania systemu,
 - **📉 Mierzalna skuteczność** — program mierzy obciążenie procesów w tle (CPU) przed i po starcie sesji i pokazuje je w raporcie („tło: 18,4% → 2,1%”), zamiast obiecywać magiczne „+100 FPS”,
-- **🧪 Test sprzętu i auto-dopasowanie** — benchmark CPU/RAM/dysku/GPU z oceną klasy komputera, automatyczne ustawienia FocusIt pod sprzęt oraz **dopasowanie grafiki w grach Unreal Engine** (np. Fortnite) z kopią zapasową ustawień,
+- **🧪 Test sprzętu i auto-dopasowanie** — rozbudowany benchmark (CPU 1/wiele rdzeni, throttling, latencja RAM, dysk 4K IOPS, GPU) z inwentaryzacją sprzętu, oceną klasy komputera, automatycznymi ustawieniami FocusIt oraz **dopasowaniem grafiki w grach Unreal Engine** (np. Fortnite) z kopią zapasową ustawień,
+- **⚙ Windows na 100%** — raport optymalizacji systemu (Tryb gry, Game DVR, HAGS, VBS, TRIM, Hz monitora), sesyjny plan zasilania bez parkowania rdzeni i oszczędzania PCIe/USB, wyłączanie nagrywania w tle i timera 1 ms tylko na czas gry, exclusive fullscreen dla wybranej gry — wszystko odwracalne,
 - **🪟 Nakładki w grze** — półprzezroczyste widżety (czas sesji, obciążenie, przyciski akcji) z edycją zestawu, przezroczystości i położenia,
 - **🎮 Głębokie ustawienia** — Tryb gry Windows tylko na czas sesji, preferencja GPU „Wysoka wydajność” dla gry, plan „Wydajność maksymalna” — wszystko odwracalne,
 - **Automatyzacja** — opcjonalna **auto-sesja**: FocusIt sam wykrywa start gry z biblioteki i włącza jej sesję, a po zamknięciu gry sam przywraca ustawienia; **mini-widget** sesji zawsze na wierzchu; **skrót globalny Ctrl+Alt+F**,

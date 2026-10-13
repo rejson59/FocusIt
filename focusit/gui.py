@@ -14,14 +14,17 @@ from tkinter import filedialog, messagebox, ttk
 
 from .core import (SERVICE_CANDIDATES, BenchmarkResult, FocusSession,
                    FocusStore, GameEntry, ProcessInfo, apply_ue_settings,
-                   check_for_update, compute_health_score, create_restore_point,
-                   device_recommendations, execute_temp_clean, find_target_pid,
-                   flush_dns, get_gpu_stats, get_system_stats, launch_app,
-                   list_autostart, list_processes, parse_affinity,
-                   preview_temp_clean, recover_previous_session,
-                   restore_ue_settings, run_benchmark, scan_game_library,
-                   set_autostart_enabled, set_game_gpu_preference,
-                   ue_current_settings, ue_recommended_changes)
+                   benchmark2_to_legacy, check_for_update, compute_health_score,
+                   create_restore_point, device_recommendations,
+                   execute_temp_clean, find_target_pid, flush_dns,
+                   get_gpu_stats, get_system_stats, hardware_inventory,
+                   launch_app, list_autostart, list_processes, parse_affinity,
+                   performance_findings, preview_temp_clean,
+                   recover_previous_session, restore_ue_settings,
+                   run_benchmark2, scan_game_library, set_autostart_enabled,
+                   set_fullscreen_optimizations, set_game_gpu_preference,
+                   set_hardware_gpu_scheduling, ue_current_settings,
+                   ue_recommended_changes, windows_optimization_report)
 
 BG = "#060706"          # matowa czerń
 PANEL = "#090B09"
@@ -37,29 +40,14 @@ RED = "#FF3B30"
 GOLD = "#FFC400"
 BORDER = "#20331B"      # przygaszona zieleń ramek
 
-_CLASSIC = {"BG": "#080A10", "PANEL": "#0F1420", "CARD": "#171E2E",
-            "CARD_HOVER": "#212B42", "TEXT": "#EDF1F9", "MUTED": "#8A94A8",
-            "ACCENT": "#8B5CF6", "NEON": "#8B5CF6", "CYAN": "#22D3EE",
-            "GREEN": "#22C55E", "BORDER": "#232C42"}
-
-
-def apply_theme(theme: str) -> None:
-    """Ustawia paletę kolorów (neon = matowa czerń + zielone neony)."""
+def apply_theme(theme: str = "neon") -> None:
+    """Jedyny motyw FocusIt: matowa czerń + neonowa zieleń (Neon Honeycomb)."""
     global BG, PANEL, CARD, CARD_HOVER, TEXT, MUTED, ACCENT, NEON, CYAN, GREEN, BORDER
-    if theme == "classic":
-        vals = _CLASSIC
-        BG, PANEL, CARD, CARD_HOVER, TEXT, MUTED = (vals["BG"], vals["PANEL"],
-                                                    vals["CARD"], vals["CARD_HOVER"],
-                                                    vals["TEXT"], vals["MUTED"])
-        ACCENT, NEON, CYAN, GREEN, BORDER = (vals["ACCENT"], vals["NEON"],
-                                             vals["CYAN"], vals["GREEN"],
-                                             vals["BORDER"])
-    else:
-        BG, PANEL, CARD, CARD_HOVER, TEXT, MUTED = ("#060706", "#090B09",
-                                                    "#10130E", "#182114",
-                                                    "#F2FFF5", "#8FA393")
-        ACCENT, NEON, CYAN, GREEN, BORDER = ("#00C853", "#39FF14", "#B7FF3C",
-                                             "#00E65A", "#20331B")
+    BG, PANEL, CARD, CARD_HOVER, TEXT, MUTED = ("#060706", "#090B09",
+                                                "#10130E", "#182114",
+                                                "#F2FFF5", "#8FA393")
+    ACCENT, NEON, CYAN, GREEN, BORDER = ("#00C853", "#39FF14", "#B7FF3C",
+                                         "#00E65A", "#20331B")
 
 
 def _hex_points(cx: float, cy: float, r: float) -> list[float]:
@@ -132,6 +120,7 @@ class FocusItApp:
         self._overlay_labels: dict[str, tk.Label] = {}
         self._overlays_for_session = False
         self.benchmark_result: BenchmarkResult | None = None
+        self.benchmark2 = None
 
         from . import __version__
         root.title(f"FocusIt {__version__} — wyciśnij 100% ze swojego komputera")
@@ -738,6 +727,24 @@ class FocusItApp:
                        selectcolor=CARD, font=("Segoe UI", 9),
                        command=self._save_deep_settings).pack(padx=12, pady=(8, 2),
                                                               anchor="w")
+        self.deep_dvr = tk.BooleanVar(
+            value=self.store.settings.get("disable_game_dvr_session", False))
+        tk.Checkbutton(dbox, text="Wyłączaj nagrywanie w tle Game DVR na czas "
+                                  "sesji (potrafi zjadać FPS)",
+                       variable=self.deep_dvr, bg=BG, fg=TEXT,
+                       activebackground=BG, activeforeground=TEXT,
+                       selectcolor=CARD, font=("Segoe UI", 9),
+                       command=self._save_deep_settings).pack(padx=12, anchor="w")
+        self.deep_timer = tk.BooleanVar(
+            value=self.store.settings.get("timer_resolution_session", False))
+        tk.Checkbutton(dbox, text="Precyzja timera 1 ms na czas sesji "
+                                  "(płynniejsze czasy klatek)",
+                       variable=self.deep_timer, bg=BG, fg=TEXT,
+                       activebackground=BG, activeforeground=TEXT,
+                       selectcolor=CARD, font=("Segoe UI", 9),
+                       command=self._save_deep_settings).pack(padx=12,
+                                                              pady=(0, 4),
+                                                              anchor="w")
         grow2 = tk.Frame(dbox, bg=BG)
         grow2.pack(padx=12, pady=6, anchor="w")
         tk.Button(grow2, text="🎮 Ustaw 'Wysoka wydajność' GPU dla wybranej gry",
@@ -746,6 +753,18 @@ class FocusItApp:
         tk.Button(grow2, text="↩ Usuń preferencję GPU", bg=CARD, fg=TEXT,
                   relief="flat", padx=12, pady=5, cursor="hand2",
                   command=self._gpu_pref_off).pack(side="left", padx=6)
+        grow3 = tk.Frame(dbox, bg=BG)
+        grow3.pack(padx=12, pady=2, anchor="w")
+        tk.Button(grow3, text="🖥 Wyłącz optymalizacje pełnoekranowe dla gry",
+                  bg=CARD, fg=TEXT, relief="flat", padx=12, pady=5,
+                  cursor="hand2", command=self._fso_off).pack(side="left")
+        tk.Button(grow3, text="↩ Przywróć", bg=CARD, fg=TEXT, relief="flat",
+                  padx=12, pady=5, cursor="hand2",
+                  command=self._fso_on).pack(side="left", padx=6)
+        tk.Button(grow3, text="📋 Raport optymalizacji Windows", bg=ACCENT,
+                  fg="#03150A", relief="flat", padx=12, pady=5, cursor="hand2",
+                  font=("Segoe UI", 9, "bold"),
+                  command=self._show_windows_report).pack(side="left", padx=6)
         tk.Label(dbox, text="FocusIt świadomie NIE stosuje popularnych „magicznych” "
                             "tweaków (HPET, timer resolution, losowe wpisy rejestru) "
                             "— nie ma dowodów, że pomagają, a potrafią szkodzić. "
@@ -820,8 +839,58 @@ class FocusItApp:
 
     def _save_deep_settings(self) -> None:
         self.store.settings["windows_game_mode_session"] = self.deep_gamemode.get()
+        if hasattr(self, "deep_dvr"):
+            self.store.settings["disable_game_dvr_session"] = self.deep_dvr.get()
+        if hasattr(self, "deep_timer"):
+            self.store.settings["timer_resolution_session"] = self.deep_timer.get()
         self.store.save()
         self.log("Zapisano głębokie ustawienia systemowe.")
+
+    def _fso_off(self) -> None:
+        _, exe, _ = self._resolve_target()
+        msg = set_fullscreen_optimizations(exe, True)
+        self.log(msg)
+        messagebox.showinfo("FocusIt", msg)
+
+    def _fso_on(self) -> None:
+        _, exe, _ = self._resolve_target()
+        msg = set_fullscreen_optimizations(exe, False)
+        self.log(msg)
+        messagebox.showinfo("FocusIt", msg)
+
+    def _show_windows_report(self) -> None:
+        report = windows_optimization_report()
+        win = tk.Toplevel(self.root)
+        win.title("FocusIt — raport optymalizacji Windows")
+        win.configure(bg=BG)
+        win.geometry("720x520")
+        tk.Label(win, text="📋 Co w Twoim Windowsie wpływa na gry", bg=BG,
+                 fg=TEXT, font=("Segoe UI", 14, "bold")).pack(padx=16,
+                                                               pady=12,
+                                                               anchor="w")
+        txt = tk.Text(win, bg=CARD, fg=TEXT, relief="flat", wrap="word",
+                      font=("Segoe UI", 10), insertbackground=TEXT)
+        txt.pack(fill="both", expand=True, padx=16, pady=6)
+        icons = {"ok": "✅", "warn": "⚠️", "bad": "❌", "info": "ℹ️"}
+        for row in report:
+            txt.insert("end", f"{icons.get(row['level'], 'ℹ️')} {row['name']}: "
+                              f"{row['status']}\n   {row['advice']}\n\n")
+        hrow = tk.Frame(win, bg=BG)
+        hrow.pack(padx=16, pady=8, anchor="w")
+        tk.Label(hrow, text="HAGS (wymaga admina + restartu):", bg=BG, fg=TEXT,
+                 font=("Segoe UI", 9)).pack(side="left")
+        tk.Button(hrow, text="Włącz HAGS", bg=CARD, fg=TEXT, relief="flat",
+                  padx=10, pady=4, cursor="hand2",
+                  command=lambda: messagebox.showinfo(
+                      "FocusIt", set_hardware_gpu_scheduling(True))).pack(
+                          side="left", padx=4)
+        tk.Button(hrow, text="Wyłącz HAGS", bg=CARD, fg=TEXT, relief="flat",
+                  padx=10, pady=4, cursor="hand2",
+                  command=lambda: messagebox.showinfo(
+                      "FocusIt", set_hardware_gpu_scheduling(False))).pack(
+                          side="left")
+        for row in report:
+            self.log(f"Raport Windows: {row['name']} = {row['status']}")
 
     def _gpu_pref_on(self) -> None:
         _, exe, _ = self._resolve_target()
@@ -1118,8 +1187,16 @@ class FocusItApp:
         saved = self.store.settings.get("last_benchmark") or {}
         if saved:
             try:
-                self.benchmark_result = BenchmarkResult(**{
-                    k: saved[k] for k in BenchmarkResult().__dict__ if k in saved})
+                if "cpu_multi_mbs" in saved:
+                    from .core import BenchmarkResult2
+                    self.benchmark2 = BenchmarkResult2(**{
+                        k: saved[k] for k in BenchmarkResult2().__dict__
+                        if k in saved})
+                    self.benchmark_result = benchmark2_to_legacy(self.benchmark2)
+                else:
+                    self.benchmark_result = BenchmarkResult(**{
+                        k: saved[k] for k in BenchmarkResult().__dict__
+                        if k in saved})
                 self._show_benchmark()
             except Exception:
                 pass
@@ -1156,9 +1233,14 @@ class FocusItApp:
 
         def work() -> None:
             try:
-                result = run_benchmark(progress=self._bench_progress)
-                self.benchmark_result = result
-                self.store.settings["last_benchmark"] = result.to_dict()
+                result2 = run_benchmark2(progress=self._bench_progress)
+                self.benchmark2 = result2
+                self.benchmark_result = benchmark2_to_legacy(result2)
+                self.store.settings["last_benchmark"] = result2.to_dict()
+                history = self.store.settings.setdefault("benchmark_history", [])
+                history.insert(0, {"date": time.strftime("%Y-%m-%d %H:%M"),
+                                   "score": result2.score, "tier": result2.tier})
+                self.store.settings["benchmark_history"] = history[:10]
                 self.store.save()
                 self.root.after(0, self._show_benchmark)
             except Exception as exc:
@@ -1173,12 +1255,25 @@ class FocusItApp:
         r = self.benchmark_result
         if not r:
             return
-        self.bench_labels["cpu"].configure(
-            text=f"{r.cpu_mbs:.0f} pkt\n({r.cpu_threads} wątków)")
-        self.bench_labels["ram"].configure(
-            text=f"{r.ram_total_gb:.0f} GB\n{r.ram_mbs:.0f} MB/s")
-        self.bench_labels["disk"].configure(
-            text=f"zapis {r.disk_write_mbs:.0f}\nodczyt {r.disk_read_mbs:.0f} MB/s")
+        r2 = self.benchmark2
+        if r2:
+            self.bench_labels["cpu"].configure(
+                text=f"1 rdzeń: {r2.cpu_single_mbs:.0f}\n"
+                     f"wszystkie: {r2.cpu_multi_mbs:.0f}\n"
+                     f"skalowanie {r2.cpu_scaling_pct:.0f}%")
+            self.bench_labels["ram"].configure(
+                text=f"{r.ram_total_gb:.0f} GB\n{r.ram_mbs:.0f} MB/s\n"
+                     f"latencja ~{r2.ram_latency_ns:.0f} ns")
+            self.bench_labels["disk"].configure(
+                text=f"sekw. {r.disk_read_mbs:.0f} MB/s\n"
+                     f"4K: {r2.disk_random_iops:.0f} IOPS")
+        else:
+            self.bench_labels["cpu"].configure(
+                text=f"{r.cpu_mbs:.0f} pkt\n({r.cpu_threads} wątków)")
+            self.bench_labels["ram"].configure(
+                text=f"{r.ram_total_gb:.0f} GB\n{r.ram_mbs:.0f} MB/s")
+            self.bench_labels["disk"].configure(
+                text=f"zapis {r.disk_write_mbs:.0f}\nodczyt {r.disk_read_mbs:.0f} MB/s")
         self.bench_labels["gpu"].configure(
             text=f"{r.gpu_vram_gb:.0f} GB VRAM\n{r.gpu_name[:26]}")
         color = GREEN if r.score >= 66 else (GOLD if r.score >= 40 else RED)
@@ -1188,6 +1283,28 @@ class FocusItApp:
         lines += [f"• {k}: {v}" for k, v in rec["grafika"].items()]
         lines += ["", "⚙ Rekomendacje dla FocusIt:"]
         lines += [f"• {k}: {v}" for k, v in rec["focusit"].items()]
+        if r2:
+            findings = performance_findings(r2)
+            if findings:
+                lines += ["", "🔬 Wnioski z testów wydajności:"]
+                lines += [f"• {x}" for x in findings]
+            if r2.cpu_sustained_drop_pct > 12:
+                lines.append(f"• UWAGA: pod obciążeniem CPU traci "
+                             f"{r2.cpu_sustained_drop_pct:.0f}% wydajności.")
+            inv = hardware_inventory()
+            lines += ["", "🖥 Twój sprzęt:"]
+            lines.append(f"• CPU: {inv.get('cpu', '?')} ({inv.get('cpu_cores')} rdzenie)")
+            if inv.get("ram_modules"):
+                lines.append(f"• RAM: {', '.join(inv['ram_modules'])}")
+            if inv.get("gpus"):
+                lines.append(f"• GPU: {', '.join(inv['gpus'])}")
+            if inv.get("disks"):
+                lines.append(f"• Dyski: {', '.join(inv['disks'])}")
+            lines.append(f"• System: {inv.get('os', '?')}")
+            hist = self.store.settings.get("benchmark_history", [])
+            if hist:
+                lines += ["", "📈 Historia testów: " + "  |  ".join(
+                    f"{h['date']}: {h['score']}/100" for h in hist[:5])]
         if rec["porady"]:
             lines += ["", "💡 Porady:"]
             lines += [f"• {p}" for p in rec["porady"]]
@@ -1331,12 +1448,7 @@ class FocusItApp:
                        activebackground=BG, activeforeground=TEXT,
                        selectcolor=CARD, font=("Segoe UI", 10, "bold")).pack(
                            padx=14, pady=(8, 2), anchor="w")
-        tk.Radiobutton(theme_box, text="Klasyczny — grafit i fiolet",
-                       value="classic", variable=self.set_theme, bg=BG, fg=TEXT,
-                       activebackground=BG, activeforeground=TEXT,
-                       selectcolor=CARD, font=("Segoe UI", 10)).pack(
-                           padx=14, anchor="w")
-        tk.Label(theme_box, text="Zmiana motywu wymaga ponownego uruchomienia programu.",
+        tk.Label(theme_box, text="Neon Honeycomb jest stałym, spójnym motywem marki FocusIt.",
                  bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(
                      padx=14, pady=(2, 8), anchor="w")
 

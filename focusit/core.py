@@ -153,13 +153,15 @@ DEFAULT_SETTINGS = {
     "onboarded": False,             # czy pokazano ekran powitalny
     "stop_services": [],            # usługi Windows wstrzymywane na czas sesji
     "windows_game_mode_session": False,  # włączaj Tryb gry Windows na czas sesji
+    "disable_game_dvr_session": False,   # wyłączaj nagrywanie Game DVR na czas sesji
+    "timer_resolution_session": False,   # precyzja timera 1 ms na czas sesji
     "overlay_enabled": True,        # nakładka podczas sesji
     "overlay_opacity": 85,          # przezroczystość nakładki (%)
     "overlay_clickthrough": False,  # klikanie "przez" nakładkę (Windows)
     "overlay_widgets": ["czas", "statystyki", "przyciski"],
     "overlay_positions": {},        # zapamiętane pozycje widżetów {nazwa: [x, y]}
     "last_benchmark": {},           # ostatni wynik testu sprzętu
-    "theme": "neon",                # neon (czerń+zieleń) | classic (fiolet)
+    "theme": "neon",                # staly motyw Neon Honeycomb
 }
 
 
@@ -533,7 +535,7 @@ class PowerPlanManager:
         except Exception:
             return None
 
-    def set_high_performance(self) -> str:
+    def set_high_performance(self, log: Callable[[str], None] = print) -> str:
         if not self.is_windows:
             return "Plan zasilania: pominięto (tylko Windows)."
         self._previous_guid = self.current_guid()
@@ -549,6 +551,7 @@ class PowerPlanManager:
                 r = subprocess.run(["powercfg", "/setactive", guid],
                                    capture_output=True, text=True, timeout=10)
                 if r.returncode == 0:
+                    apply_session_power_tweaks(log=log)
                     return f"Plan zasilania: włączono wysoką wydajność ({guid[:8]}…)."
             except Exception:
                 pass
@@ -583,9 +586,13 @@ def set_target_priority(pid: int, high: bool = True) -> str:
         proc = psutil.Process(pid)
         if sys.platform.startswith("win"):
             proc.nice(psutil.HIGH_PRIORITY_CLASS if high else psutil.NORMAL_PRIORITY_CLASS)
+            try:
+                proc.ionice(psutil.IOPRIO_HIGH if high else psutil.IOPRIO_NORMAL)
+            except (psutil.AccessDenied, AttributeError):
+                pass
         else:
             proc.nice(-5 if high else 0)
-        return f"Priorytet {'wysoki' if high else 'normalny'} dla PID {pid}."
+        return f"Priorytet {'wysoki (CPU+IO)' if high else 'normalny'} dla PID {pid}."
     except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError) as exc:
         return f"Priorytet: nie udało się zmienić ({exc})."
 
@@ -655,6 +662,8 @@ class FocusSession:
         self.bg_load_after = 0.0
         self._stopped_services: list[str] = []
         self._game_mode_previous: Optional[dict] = None
+        self._game_dvr_previous: Optional[dict] = None
+        self.timer = TimerResolution()
 
     def build_plan(self, processes: Optional[list[ProcessInfo]] = None) -> KillPlan:
         processes = processes if processes is not None else list_processes()
@@ -688,6 +697,11 @@ class FocusSession:
             if self.settings.get("windows_game_mode_session"):
                 self._game_mode_previous = get_game_mode_state()
                 self.log(set_game_mode(True))
+            if self.settings.get("disable_game_dvr_session"):
+                self._game_dvr_previous = get_game_dvr_state()
+                set_game_recording(False, log=self.log)
+            if self.settings.get("timer_resolution_session"):
+                self.timer.request(log=self.log)
             services = self.settings.get("stop_services", [])
             if services:
                 self._stopped_services = stop_services_for_session(
@@ -701,7 +715,7 @@ class FocusSession:
 
         if not simulate:
             if self.preset.get("power_high_performance"):
-                self.log(self.power.set_high_performance())
+                self.log(self.power.set_high_performance(log=self.log))
             # uruchom aplikacje z presetu (poza celem — cel startuje osobno)
             for app in self.preset.get("launch_apps", []):
                 if Path(app.replace("\\", "/")).stem.lower() != Path(
@@ -730,6 +744,11 @@ class FocusSession:
         duration = int(time.time() - self.started_at) if self.started_at else 0
         restored = []
         if self.active and not self.simulate:
+            self.timer.release()
+            if getattr(self, "_game_dvr_previous", None) is not None:
+                self.log(set_game_recording(True, self._game_dvr_previous,
+                                             log=self.log))
+                self._game_dvr_previous = None
             if getattr(self, "_game_mode_previous", None) is not None:
                 self.log(set_game_mode(False, self._game_mode_previous))
                 self._game_mode_previous = None
@@ -790,6 +809,7 @@ class FocusSession:
             "power_guid": self.power._previous_guid,
             "stopped_services": list(self._stopped_services),
             "game_mode_previous": self._game_mode_previous,
+            "game_dvr_previous": self._game_dvr_previous,
         }
 
 
@@ -1317,6 +1337,9 @@ def recover_previous_session(store: "FocusStore",
         msg = set_game_mode(False, state["game_mode_previous"])
         messages.append(msg)
         log(msg)
+    if state.get("game_dvr_previous") is not None:
+        msg = set_game_recording(True, state["game_dvr_previous"], log=log)
+        messages.append(msg)
     power_guid = state.get("power_guid")
     if power_guid:
         manager = PowerPlanManager()
@@ -1841,3 +1864,506 @@ def set_game_gpu_preference(exe_path: str, high_performance: bool = True) -> str
                 return "Ta gra nie miała ustawionej preferencji GPU."
     except Exception as exc:
         return f"Preferencja GPU: błąd ({exc})."
+
+
+# ---------------------------------------------------------------------------
+# v1.6: rozbudowane testy wydajności + inwentaryzacja sprzętu
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BenchmarkResult2:
+    cpu_single_mbs: float = 0.0
+    cpu_multi_mbs: float = 0.0
+    cpu_scaling_pct: float = 0.0
+    cpu_sustained_drop_pct: float = 0.0   # spadek wydajności pod obciążeniem
+    cpu_freq_mhz: float = 0.0
+    ram_mbs: float = 0.0
+    ram_latency_ns: float = 0.0
+    ram_total_gb: float = 0.0
+    disk_write_mbs: float = 0.0
+    disk_read_mbs: float = 0.0
+    disk_random_iops: float = 0.0
+    gpu_name: str = ""
+    gpu_vram_gb: float = 0.0
+    tier: str = ""
+    score: int = 0
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def benchmark_cpu_single(duration: float = 0.7) -> float:
+    return benchmark_cpu(duration=duration, threads=1)
+
+
+def benchmark_ram_latency(rounds: int = 300_000) -> float:
+    """Przybliżona latencja dostępu losowego do RAM (ns) — test łańcucha wskaźników."""
+    import random
+    n = 1 << 16
+    order = list(range(n))
+    random.Random(42).shuffle(order)
+    nxt = [0] * n
+    for i, v in enumerate(order):
+        nxt[order[i - 1]] = v
+    idx = order[0]
+    start = time.perf_counter()
+    for _ in range(rounds):
+        idx = nxt[idx]
+    elapsed = time.perf_counter() - start
+    _ = idx
+    return round(elapsed / rounds * 1e9, 1)
+
+
+def benchmark_disk_random(folder=None, size_mb: int = 64,
+                          ops: int = 800, block: int = 4096) -> float:
+    """Losowy odczyt 4K (IOPS) — kluczowy dla czasu ładowania gier."""
+    import random
+    import tempfile
+    folder = Path(folder) if folder else Path(tempfile.gettempdir())
+    path = folder / "focusit_benchmark_rnd.tmp"
+    try:
+        with open(path, "wb") as f:
+            f.write(os.urandom(size_mb * 1024 * 1024))
+        max_block = (size_mb * 1024 * 1024) // block - 1
+        rng = random.Random(7)
+        offsets = [rng.randrange(max_block) * block for _ in range(ops)]
+        start = time.perf_counter()
+        with open(path, "rb") as f:
+            for off in offsets:
+                f.seek(off)
+                f.read(block)
+        elapsed = time.perf_counter() - start
+        return round(ops / max(elapsed, 0.001), 1)
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def benchmark_sustained_cpu(rounds: int = 2, duration: float = 0.8) -> tuple[float, float]:
+    """(pierwszy wynik, spadek %) — wykrywa throttling termiczny CPU."""
+    scores = [benchmark_cpu(duration=duration) for _ in range(max(rounds, 2))]
+    first = scores[0]
+    drop = round((first - min(scores)) / first * 100, 1) if first else 0.0
+    return first, max(drop, 0.0)
+
+
+def run_benchmark2(progress: Callable[[str], None] = print) -> BenchmarkResult2:
+    progress("Test CPU: jeden rdzeń…")
+    single = benchmark_cpu_single()
+    progress("Test CPU: wszystkie rdzenie + obciążenie ciągłe…")
+    first_multi, drop = benchmark_sustained_cpu()
+    multi = first_multi
+    progress("Test RAM: przepustowość i latencja…")
+    ram_speed = benchmark_ram()
+    latency = benchmark_ram_latency()
+    progress("Test dysku: sekwencyjnie i losowo 4K…")
+    dw, dr = benchmark_disk()
+    iops = benchmark_disk_random()
+    gpu = get_gpu_stats() or {}
+    vm = psutil.virtual_memory()
+    freq = psutil.cpu_freq()
+    threads = os.cpu_count() or 1
+    result = BenchmarkResult2(
+        cpu_single_mbs=single, cpu_multi_mbs=multi,
+        cpu_scaling_pct=round(multi / single / threads * 100, 1)
+        if single and threads > 1 else 100.0,
+        cpu_sustained_drop_pct=drop,
+        cpu_freq_mhz=round(freq.current, 0) if freq else 0.0,
+        ram_mbs=ram_speed, ram_latency_ns=latency,
+        ram_total_gb=round(vm.total / (1024 ** 3), 1),
+        disk_write_mbs=dw, disk_read_mbs=dr, disk_random_iops=iops,
+        gpu_name=gpu.get("name", "nie wykryto (tylko NVIDIA)"),
+        gpu_vram_gb=round(gpu.get("mem_total_mb", 0) / 1024, 1))
+    # dysk: łączny wskaźnik z odczytu sekwencyjnego i IOPS
+    disk_points = dr + min(iops / 20, 800)
+    result.tier, result.score = classify_device(multi, result.ram_total_gb,
+                                                result.gpu_vram_gb, disk_points)
+    progress("Gotowe.")
+    return result
+
+
+def benchmark2_to_legacy(r: BenchmarkResult2) -> BenchmarkResult:
+    """Zgodność ze starszym formatem rekomendacji / zapisu."""
+    return BenchmarkResult(cpu_mbs=r.cpu_multi_mbs,
+                           cpu_threads=os.cpu_count() or 0,
+                           ram_mbs=r.ram_mbs, ram_total_gb=r.ram_total_gb,
+                           disk_write_mbs=r.disk_write_mbs,
+                           disk_read_mbs=r.disk_read_mbs,
+                           gpu_name=r.gpu_name, gpu_vram_gb=r.gpu_vram_gb,
+                           tier=r.tier, score=r.score)
+
+
+def hardware_inventory() -> dict:
+    """Inwentaryzacja sprzętu (Windows: CIM/PowerShell; inne: psutil)."""
+    info: dict = {
+        "cpu": "", "cpu_cores": os.cpu_count() or 0, "ram_modules": [],
+        "gpus": [], "disks": [], "os": f"{sys.platform}",
+    }
+    if sys.platform.startswith("win"):
+        script = (
+            "$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores;"
+            "$ram = @(Get-CimInstance Win32_PhysicalMemory | ForEach-Object {"
+            "  [string]::Concat([math]::Round($_.Capacity/1GB), ' GB @ ', $_.Speed, ' MHz') });"
+            "$gpu = @(Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name });"
+            "$disk = @(Get-CimInstance Win32_DiskDrive | ForEach-Object {"
+            "  [string]::Concat($_.Model, ' (', $_.MediaType, ')') });"
+            "[pscustomobject]@{cpu=$cpu.Name; cores=$cpu.NumberOfCores; ram=$ram;"
+            " gpu=$gpu; disk=$disk; os=(Get-CimInstance Win32_OperatingSystem).Caption}"
+            " | ConvertTo-Json -Compress")
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                                 capture_output=True, text=True, timeout=30).stdout
+            data = json.loads(out)
+            info.update({"cpu": data.get("cpu", ""),
+                         "cpu_cores": data.get("cores", info["cpu_cores"]),
+                         "ram_modules": data.get("ram", []),
+                         "gpus": data.get("gpu", []),
+                         "disks": data.get("disk", []),
+                         "os": data.get("os", info["os"])})
+        except Exception:
+            pass
+    if not info["cpu"]:
+        import platform
+        info["cpu"] = platform.processor() or platform.machine()
+    gpu = get_gpu_stats()
+    if gpu and not info["gpus"]:
+        info["gpus"] = [gpu.get("name", "")]
+    return info
+
+
+def performance_findings(r: BenchmarkResult2) -> list[str]:
+    """Wnioski z rozbudowanego testu — co realnie ogranicza ten komputer."""
+    findings: list[str] = []
+    if r.cpu_scaling_pct and r.cpu_scaling_pct < 55:
+        findings.append(f"Słabe skalowanie wielordzeniowe ({r.cpu_scaling_pct:.0f}% "
+                        "efektywności) — gry jednowątkowe będą limitowane jednym rdzeniem.")
+    if r.cpu_sustained_drop_pct > 12:
+        findings.append(f"Wykryto możliwy THROTTLING CPU: spadek wydajności "
+                        f"{r.cpu_sustained_drop_pct:.0f}% pod obciążeniem. Sprawdź chłodzenie.")
+    if r.ram_latency_ns > 160:
+        findings.append(f"Wysoka latencja RAM ({r.ram_latency_ns:.0f} ns) — w BIOS "
+                        "warto włączyć XMP/EXPO.")
+    if 0 < r.disk_random_iops < 800:
+        findings.append(f"Niski losowy odczyt dysku ({r.disk_random_iops:.0f} IOPS) "
+                        "— jak HDD; gry będą się wolno doczytywać.")
+    if r.disk_random_iops >= 20000:
+        findings.append(f"Dysk NVMe w świetnej formie ({r.disk_random_iops:.0f} IOPS 4K).")
+    if r.ram_total_gb and r.ram_total_gb < 16:
+        findings.append("RAM <16 GB to dziś najczęstsze wąskie gardło w grach.")
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# v1.6: głębokie, odwracalne optymalizacje Windows
+# ---------------------------------------------------------------------------
+
+_POWER_SUB_PROCESSOR = "54533251-82be-4824-96c1-47b60b740d00"
+
+
+def _powercfg(args: list[str]) -> bool:
+    try:
+        return subprocess.run(["powercfg"] + args, capture_output=True,
+                              timeout=15).returncode == 0
+    except Exception:
+        return False
+
+
+def apply_session_power_tweaks(log: Callable[[str], None] = print) -> None:
+    """
+    Ustawienia zasilania tylko dla aktywnego planu sesji (AC):
+    procesor 100%, brak parkowania rdzeni, PCIe bez oszczędzania,
+    USB bez usypiania, dysk bez usypiania. Powrót = przywrócenie planu.
+    """
+    tweaks = [
+        (_POWER_SUB_PROCESSOR, "893dee8e-2bef-41e0-89c6-b55d0929964c", 100, "min. stan CPU"),
+        (_POWER_SUB_PROCESSOR, "bc5038f7-23e0-4960-96da-33abaf5935ec", 100, "maks. stan CPU"),
+        (_POWER_SUB_PROCESSOR, "0cc5b647-c1df-4637-891a-dec35c318583", 100, "parkowanie rdzeni (min)"),
+        (_POWER_SUB_PROCESSOR, "ea062031-0e34-4ff1-9b6d-eb1059334028", 100, "parkowanie rdzeni (maks)"),
+        ("501a4d13-42af-4429-9fd1-a8218c268e20", "ee12f906-d277-404b-b6da-e5fa1a576df5", 0, "PCIe ASPM"),
+        ("2a737441-1930-4402-8d77-b2bebba308a3", "48e6b7a6-50f5-4782-a5d4-53bb8f07e226", 0, "usypianie USB"),
+        ("0012ee47-9041-4b5d-9b77-535fba8b1442", "6738e2c4-e8a5-4a42-b16a-e040e769756e", 0, "usypianie dysku"),
+    ]
+    done = 0
+    for subgroup, setting, value, label in tweaks:
+        if _powercfg(["/setacvalueindex", "SCHEME_CURRENT", subgroup, setting,
+                      str(value)]):
+            done += 1
+    if done:
+        _powercfg(["/setactive", "SCHEME_CURRENT"])
+        log(f"Zasilanie sesji: zastosowano {done}/{len(tweaks)} ustawień "
+            "pełnej wydajności (powrót wraz z planem po sesji).")
+
+
+# --- nagrywanie Game DVR (odwracalne, na czas sesji) ---
+
+def get_game_dvr_state() -> Optional[dict]:
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import winreg
+        state: dict[str, Optional[int]] = {}
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\GameDVR") as k:
+            for name in ("AppCaptureEnabled", "HistoricalCaptureEnabled"):
+                try:
+                    state[name] = winreg.QueryValueEx(k, name)[0]
+                except OSError:
+                    state[name] = None
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"System\GameConfigStore") as k:
+            try:
+                state["GameDVR_Enabled"] = winreg.QueryValueEx(k, "GameDVR_Enabled")[0]
+            except OSError:
+                state["GameDVR_Enabled"] = None
+        return state
+    except Exception:
+        return None
+
+
+def set_game_recording(enabled: bool, previous: Optional[dict] = None,
+                       log: Callable[[str], None] = print) -> str:
+    if not sys.platform.startswith("win"):
+        return "Game DVR: tylko Windows."
+    try:
+        import winreg
+
+        def apply(key_path: str, name: str, value: Optional[int]) -> None:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as k:
+                if value is None:
+                    try:
+                        winreg.DeleteValue(k, name)
+                    except OSError:
+                        pass
+                else:
+                    winreg.SetValueEx(k, name, 0, winreg.REG_DWORD, value)
+
+        dvr = r"Software\Microsoft\Windows\CurrentVersion\GameDVR"
+        store = r"System\GameConfigStore"
+        if enabled:
+            apply(dvr, "AppCaptureEnabled", (previous or {}).get("AppCaptureEnabled", 1))
+            apply(dvr, "HistoricalCaptureEnabled", (previous or {}).get("HistoricalCaptureEnabled", 1))
+            apply(store, "GameDVR_Enabled", (previous or {}).get("GameDVR_Enabled", 1))
+            msg = "Nagrywanie Game DVR: przywrócono poprzednie ustawienia."
+        else:
+            apply(dvr, "AppCaptureEnabled", 0)
+            apply(dvr, "HistoricalCaptureEnabled", 0)
+            apply(store, "GameDVR_Enabled", 0)
+            msg = "Nagrywanie w tle (Game DVR) wyłączone na czas sesji — koniec zjadania FPS."
+        log(msg)
+        return msg
+    except Exception as exc:
+        return f"Game DVR: nie udało się zmienić ({exc})."
+
+
+# --- precyzja timera systemowego (1 ms tylko na czas sesji) ---
+
+class TimerResolution:
+    def __init__(self) -> None:
+        self.active = False
+
+    def request(self, log: Callable[[str], None] = print) -> str:
+        if not sys.platform.startswith("win"):
+            return "Precyzja timera: tylko Windows."
+        try:
+            import ctypes
+            if ctypes.windll.winmm.timeBeginPeriod(1) == 0:
+                self.active = True
+                msg = "Precyzja timera: 1 ms na czas sesji (płynniejsze czasy klatek)."
+                log(msg)
+                return msg
+        except Exception:
+            pass
+        return "Precyzja timera: nie udało się ustawić."
+
+    def release(self) -> None:
+        if self.active and sys.platform.startswith("win"):
+            try:
+                import ctypes
+                ctypes.windll.winmm.timeEndPeriod(1)
+            except Exception:
+                pass
+            self.active = False
+
+
+# --- raport stanu optymalizacji Windows ---
+
+def _reg_dword(hive, path: str, name: str) -> Optional[int]:
+    try:
+        import winreg
+        with winreg.OpenKey(hive, path) as k:
+            return winreg.QueryValueEx(k, name)[0]
+    except Exception:
+        return None
+
+
+def hardware_gpu_scheduling_status() -> Optional[bool]:
+    if not sys.platform.startswith("win"):
+        return None
+    import winreg
+    v = _reg_dword(winreg.HKEY_LOCAL_MACHINE,
+                   r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers", "HwSchMode")
+    return None if v is None else v == 2
+
+
+def set_hardware_gpu_scheduling(enabled: bool) -> str:
+    if not sys.platform.startswith("win"):
+        return "HAGS: tylko Windows."
+    try:
+        import winreg
+        with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE,
+                              r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers") as k:
+            winreg.SetValueEx(k, "HwSchMode", 0, winreg.REG_DWORD, 2 if enabled else 1)
+        return ("HAGS ustawiony — WYMAGANY restart komputera, aby zadziałał. "
+                "Jeśli pojawią się przycinki, wyłącz go tutaj z powrotem.")
+    except Exception as exc:
+        return f"HAGS: brak uprawnień administratora albo błąd ({exc})."
+
+
+def vbs_status() -> Optional[dict]:
+    if not sys.platform.startswith("win"):
+        return None
+    import winreg
+    dg = r"SYSTEM\CurrentControlSet\Control\DeviceGuard"
+    hvci = dg + r"Scenarios\HypervisorEnforcedCodeIntegrity"
+    return {"vbs": _reg_dword(winreg.HKEY_LOCAL_MACHINE, dg,
+                              "EnableVirtualizationBasedSecurity"),
+            "hvci": _reg_dword(winreg.HKEY_LOCAL_MACHINE, hvci, "Enabled")}
+
+
+def set_fullscreen_optimizations(exe_path: str, disable: bool) -> str:
+    """Przełącznik 'optymalizacji pełnoekranowych' dla jednej gry (odwracalny)."""
+    if not sys.platform.startswith("win"):
+        return "Optymalizacje pełnoekranowe: tylko Windows."
+    if not exe_path:
+        return "Najpierw wybierz grę."
+    try:
+        import winreg
+        path = r"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers"
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, path) as k:
+            if disable:
+                winreg.SetValueEx(k, exe_path, 0, winreg.REG_SZ,
+                                  "~ DISABLEDXMAXIMIZEDWINDOWEDMODE")
+                return "Wyłączono optymalizacje pełnoekranowe dla gry (prawdziwy exclusive fullscreen)."
+            try:
+                winreg.DeleteValue(k, exe_path)
+                return "Przywrócono optymalizacje pełnoekranowe dla gry."
+            except OSError:
+                return "Gra nie miała wyłączonych optymalizacji pełnoekranowych."
+    except Exception as exc:
+        return f"Optymalizacje pełnoekranowe: błąd ({exc})."
+
+
+def trim_status() -> Optional[bool]:
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        out = subprocess.run(["fsutil", "behavior", "query", "DisableDeleteNotify"],
+                             capture_output=True, text=True, timeout=15).stdout
+        # 0 = TRIM włączony (dobrze), 1 = wyłączony
+        if "= 0" in out:
+            return True
+        if "= 1" in out:
+            return False
+    except Exception:
+        pass
+    return None
+
+
+def get_display_info() -> Optional[dict]:
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import ctypes
+
+        class DEVMODE(ctypes.Structure):
+            _fields_ = [("dmDeviceName", ctypes.c_wchar * 32),
+                        ("dmSpecVersion", ctypes.c_ushort),
+                        ("dmDriverVersion", ctypes.c_ushort),
+                        ("dmSize", ctypes.c_ushort),
+                        ("dmDriverExtra", ctypes.c_ushort),
+                        ("dmFields", ctypes.c_ulong),
+                        ("dmPositionX", ctypes.c_long),
+                        ("dmPositionY", ctypes.c_long),
+                        ("dmDisplayOrientation", ctypes.c_ulong),
+                        ("dmDisplayFixedOutput", ctypes.c_ulong),
+                        ("dmColor", ctypes.c_short),
+                        ("dmDuplex", ctypes.c_short),
+                        ("dmYResolution", ctypes.c_short),
+                        ("dmTTOption", ctypes.c_short),
+                        ("dmCollate", ctypes.c_short),
+                        ("dmFormName", ctypes.c_wchar * 32),
+                        ("dmLogPixels", ctypes.c_ushort),
+                        ("dmBitsPerPel", ctypes.c_ulong),
+                        ("dmPelsWidth", ctypes.c_ulong),
+                        ("dmPelsHeight", ctypes.c_ulong),
+                        ("dmDisplayFlags", ctypes.c_ulong),
+                        ("dmDisplayFrequency", ctypes.c_ulong)]
+
+        dm = DEVMODE()
+        dm.dmSize = ctypes.sizeof(DEVMODE)
+        if ctypes.windll.user32.EnumDisplaySettingsW(None, -1, ctypes.byref(dm)):
+            return {"width": dm.dmPelsWidth, "height": dm.dmPelsHeight,
+                    "hz": dm.dmDisplayFrequency}
+    except Exception:
+        pass
+    return None
+
+
+def windows_optimization_report() -> list[dict]:
+    """Przegląd ustawień Windows realnie wpływających na wydajność w grach."""
+    report: list[dict] = []
+
+    def add(name, status, advice, level="info"):
+        report.append({"name": name, "status": status, "advice": advice,
+                       "level": level})
+
+    game_mode = get_game_mode_state()
+    if game_mode is not None:
+        on = game_mode.get("AllowAutoGameMode") in (1, None) and \
+            game_mode.get("AutoGameModeEnabled") in (1, None)
+        add("Tryb gry Windows", "włączony" if on else "wyłączony",
+            "FocusIt może włączać go automatycznie tylko na czas sesji (Ustawienia głębokie).",
+            "ok" if on else "warn")
+    dvr = get_game_dvr_state()
+    if dvr is not None:
+        recording = dvr.get("AppCaptureEnabled") not in (0,)
+        add("Nagrywanie Game DVR", "włączone" if recording else "wyłączone",
+            "Nagrywanie w tle potrafi zjadać kilka % FPS — FocusIt wyłącza je na czas sesji.",
+            "warn" if recording else "ok")
+    hags = hardware_gpu_scheduling_status()
+    if hags is not None:
+        add("HAGS (planowanie GPU)", "włączone" if hags else "wyłączone",
+            "Na większości nowoczesnych kart pomaga; zmiana wymaga restartu i administratora.",
+            "ok" if hags else "warn")
+    vbs = vbs_status()
+    if vbs is not None:
+        on = bool(vbs.get("vbs")) and bool(vbs.get("hvci"))
+        add("VBS / integralność pamięci", "włączone" if on else "wyłączone/częściowo",
+            "To funkcja BEZPIECZEŃSTWA — potrafi kosztować kilka % wydajności, "
+            "ale FocusIt jej NIE wyłącza (nie warto ryzykować ochrony systemu).",
+            "warn" if on else "ok")
+    trim = trim_status()
+    if trim is not None:
+        add("TRIM (SSD)", "włączony" if trim else "WYŁĄCZONY",
+            "TRIM utrzymuje szybkość SSD. Powinien być włączony.",
+            "ok" if trim else "bad")
+    disp = get_display_info()
+    if disp:
+        warn = disp["hz"] < 60
+        add("Monitor", f"{disp['width']}×{disp['height']} @ {disp['hz']} Hz",
+            "Upewnij się w ustawieniach Windows, że wybrana jest najwyższa "
+            "częstotliwość odświeżania monitora.",
+            "warn" if warn else "ok")
+    pm = PowerPlanManager()
+    guid = pm.current_guid()
+    if guid:
+        is_perf = guid.lower() in HIGH_PERFORMANCE_GUIDS
+        add("Plan zasilania", "wysoka wydajność" if is_perf else "inny niż wydajnościowy",
+            "FocusIt przełącza plan na czas sesji i przywraca Twój po zakończeniu.",
+            "ok" if is_perf else "warn")
+    add("FocusIt — sesja", "gotowy",
+        "Podczas sesji: plan max wydajności, CPU bez parkowania, priorytet gry, "
+        "zatrzymane usługi w tle, opcjonalnie timer 1 ms i wyłączony Game DVR.")
+    return report

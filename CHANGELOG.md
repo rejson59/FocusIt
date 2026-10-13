@@ -1,5 +1,14 @@
 # Historia zmian FocusIt
 
+## v1.6.0 — prawdziwe 100% urządzenia, bez fioletu
+- 💚 **Usunięto fiolet całkowicie** — jedynym motywem jest Neon Honeycomb (matowa czerń + neonowa zieleń).
+- 🧪 **Rozbudowane testy wydajności**: CPU 1-rdzeń i wielordzeń ze skalowaniem, test obciążenia ciągłego wykrywający **throttling**, latencja RAM, dysk sekwencyjny + **losowy 4K IOPS**, historia wyników i wnioski (wąskie gardła: jednowątkowość, chłodzenie, XMP, HDD).
+- 🖥 **Inwentaryzacja sprzętu**: model CPU, moduły RAM z taktowaniem, GPU, dyski i wersja systemu w raporcie testu.
+- ⚙ **Pełny plan sesji Windows**: plan „Wydajność maksymalna” + procesor 100% bez parkowania rdzeni, PCIe bez oszczędzania, USB/dysk bez usypiania (tylko na czas sesji).
+- 🎬 **Game DVR OFF na sesję** (nagrywanie w tle zjada FPS), **timer 1 ms na sesję**, priorytet CPU+IO gry.
+- 📋 **Raport optymalizacji Windows**: Tryb gry, Game DVR, HAGS (z przełącznikiem, restart), VBS (tylko informacja — bezpieczeństwa nie ruszamy), TRIM, odświeżanie monitora, plan zasilania.
+- 🖥 **Wyłączanie optymalizacji pełnoekranowych** dla wybranej gry (prawdziwy exclusive fullscreen), odwracalne.
+
 ## v1.5.0 — Neon Honeycomb Game Bar
 - ⬢ **Całkowicie nowy motyw „Neon Honeycomb”**: matowa czerń, neonowa zieleń i plastry miodu z rozproszoną poświatą (menu boczne, baner „Gotowy do gry?”, ramki, wykresy, nakładki).
 - 🎴 Karty statystyk i presetów dopasowane do motywu (neonowe paski obciążenia, podświetlenia, status SYSTEM GOTOWY / SESJA AKTYWNA).
