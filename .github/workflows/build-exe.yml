@@ -1,0 +1,36 @@
+name: Budowanie FocusIt.exe (Windows)
+
+on:
+  workflow_dispatch:        # ręczne uruchomienie z zakładki Actions
+  push:
+    tags: ["v*"]            # oraz przy każdym tagu wersji, np. v1.0.0
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Pobranie kodu
+        uses: actions/checkout@v4
+
+      - name: Instalacja Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalacja zależności
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Testy bezpieczeństwa silnika
+        run: python -m unittest discover -s tests -v
+
+      - name: Budowanie jednego pliku FocusIt.exe
+        run: pyinstaller --noconfirm --onefile --windowed --name FocusIt FocusIt.py
+
+      - name: Wgranie gotowego .exe jako artefakt
+        uses: actions/upload-artifact@v4
+        with:
+          name: FocusIt-Windows
+          path: dist/FocusIt.exe
+          if-no-files-found: error
