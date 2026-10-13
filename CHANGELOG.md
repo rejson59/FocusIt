@@ -1,5 +1,15 @@
 # Historia zmian FocusIt
 
+## v1.2.0
+- ❄ **Zamrażanie procesów** zamiast zabijania (opcja na Panelu): procesy w tle nie zjadają CPU, nic nie tracą i same wracają po sesji.
+- 🛟 **Odzyskiwanie po awarii**: jeśli FocusIt zostanie zamknięty siłą w trakcie sesji, przy następnym starcie sam odmrozi procesy, przywróci plan zasilania i ponownie otworzy zamknięte aplikacje.
+- ⌨ **Skrót globalny Ctrl+Alt+F** — start/stop sesji bez wychodzenia z gry.
+- ⬆ **Sprawdzanie aktualizacji** — program informuje o nowej wersji z GitHub Releases.
+- 👋 **Ekran powitalny** przy pierwszym uruchomieniu (instrukcja w 30 sekund).
+- 💡 **Inteligentne sugestie** na Panelu: „przed grą warto zamknąć: …” na podstawie ciężkich procesów w tle.
+- 🎛 **Powinowactwo CPU w profilu gry** — można przypisać grze wybrane rdzenie (np. 0-7).
+- 📊 **Wykres historii sesji** (zwolniony RAM w ostatnich 15 sesjach).
+
 ## v1.1.0
 - 🎮 **Biblioteka gier**: wykrywanie gier ze Steam (z okładkami), Epic Games i GOG; dodawanie gier ręcznie.
 - 👤 **Profile per gra**: dla każdej gry osobne ustawienia — co zachować, co dodatkowo zamykać, tryb sesji.

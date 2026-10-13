@@ -148,6 +148,9 @@ DEFAULT_SETTINGS = {
     "auto_stop": True,              # kończ auto-sesję, gdy gra zostanie zamknięta
     "show_session_widget": True,    # mini-widget podczas sesji
     "autostart_backup": {},         # kopie wyłączonych wpisów autostartu
+    "hotkey_enabled": True,         # Ctrl+Alt+F startuje/kończy sesję
+    "check_updates": True,          # sprawdzaj nowe wersje na GitHubie
+    "onboarded": False,             # czy pokazano ekran powitalny
 }
 
 
@@ -208,6 +211,7 @@ class KillPlan:
 @dataclass
 class ExecutionResult:
     killed: list[ProcessInfo] = field(default_factory=list)
+    suspended: list[ProcessInfo] = field(default_factory=list)
     simulated: list[ProcessInfo] = field(default_factory=list)
     failed: list[tuple[ProcessInfo, str]] = field(default_factory=list)
 
@@ -434,13 +438,22 @@ def compute_plan(processes: list[ProcessInfo],
 # ---------------------------------------------------------------------------
 
 def execute_plan(plan: KillPlan, simulate: bool = True,
-                 log: Callable[[str], None] = print) -> ExecutionResult:
+                 log: Callable[[str], None] = print,
+                 freeze: bool = False) -> ExecutionResult:
     result = ExecutionResult()
     candidates = [d.proc for d in plan.kill_list]
     if simulate:
         result.simulated = candidates
+        verb = "zamroziłbym" if freeze else "zamknąłbym"
         for p in candidates:
-            log(f"[SYMULACJA] zamknąłbym: {p.name} (PID {p.pid}, {p.memory_mb:.0f} MB)")
+            log(f"[SYMULACJA] {verb}: {p.name} (PID {p.pid}, {p.memory_mb:.0f} MB)")
+        return result
+    if freeze:
+        # zamrożenie zamiast zabijania: procesy nie tracą stanu i wracają po sesji
+        result.suspended = suspend_processes(candidates, log=log)
+        done = {p.pid for p in result.suspended}
+        result.failed = [(p, "nie udało się zamrozić")
+                         for p in candidates if p.pid not in done]
         return result
 
     live: list[psutil.Process] = []
@@ -536,6 +549,17 @@ class PowerPlanManager:
             return "Plan zasilania: nie udało się przywrócić poprzedniego."
         finally:
             self._previous_guid = None
+
+    def restore_to(self, guid: str) -> str:
+        """Przywraca konkretny plan zasilania (używane po awarii programu)."""
+        if not self.is_windows or not guid:
+            return "Plan zasilania: brak zapisanego planu do przywrócenia."
+        try:
+            subprocess.run(["powercfg", "/setactive", guid],
+                           capture_output=True, timeout=10)
+            return "Plan zasilania: przywrócono plan sprzed przerwanej sesji."
+        except Exception:
+            return "Plan zasilania: nie udało się przywrócić zapisanego planu."
 
 
 def set_target_priority(pid: int, high: bool = True) -> str:
@@ -634,7 +658,9 @@ class FocusSession:
         if self.plan is None:
             self.build_plan()
         self.log(f"Plan sesji „{self.preset.get('name')}”: {self.plan.summary()}")
-        self.result = execute_plan(self.plan, simulate=simulate, log=self.log)
+        self.result = execute_plan(
+            self.plan, simulate=simulate, log=self.log,
+            freeze=bool(self.preset.get("freeze_processes")))
 
         if not simulate:
             if self.preset.get("power_high_performance"):
@@ -653,6 +679,12 @@ class FocusSession:
                 else:
                     self.log("Priorytet: nie znaleziono uruchomionego procesu celu "
                              "(ustawię go, gdy gra będzie znana przy starcie).")
+            affinity = self.preset.get("cpu_affinity") or []
+            if affinity:
+                pid = self.target_pid or find_target_pid(self.target_exe,
+                                                         self.target_name)
+                if pid:
+                    self.log(set_cpu_affinity(pid, list(affinity)))
         self.active = True
         self.started_at = time.time()
         return self.result
@@ -661,6 +693,10 @@ class FocusSession:
         duration = int(time.time() - self.started_at) if self.started_at else 0
         restored = []
         if self.active and not self.simulate:
+            if self.result and self.result.suspended:
+                n = resume_processes([p.pid for p in self.result.suspended],
+                                     log=self.log)
+                self.log(f"Odmrożono {n} procesów po sesji.")
             for pid in self._priority_pids:
                 self.log(set_target_priority(pid, high=False))
             if self.preset.get("power_high_performance") and \
@@ -681,6 +717,7 @@ class FocusSession:
             "target": self.target_name or "(brak)",
             "duration_sec": duration,
             "killed_count": len(self.result.killed) if self.result else 0,
+            "suspended_count": len(self.result.suspended) if self.result else 0,
             "simulated_count": len(self.result.simulated) if self.result else 0,
             "failed_count": len(self.result.failed) if self.result else 0,
             "estimated_freed_mb": self.plan.estimated_freed_mb if self.plan else 0,
@@ -694,6 +731,19 @@ class FocusSession:
         }
         self.active = False
         return summary
+
+    def state_dict(self) -> dict:
+        """Stan aktywnej sesji do odzyskiwania po awarii FocusIt."""
+        return {
+            "preset": self.preset.get("name", "?"),
+            "target": self.target_name,
+            "started_at": self.started_at,
+            "killed_exes": [p.exe for p in (self.result.killed if self.result else [])
+                            if p.exe],
+            "suspended_pids": [p.pid for p in
+                               (self.result.suspended if self.result else [])],
+            "power_guid": self.power._previous_guid,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -767,6 +817,32 @@ class FocusStore:
         self.presets = [x for x in self.presets if x["name"] != name]
         self.save()
         return True
+
+    # --- stan przerwanej sesji (odzyskiwanie po awarii) ---
+    @property
+    def session_state_file(self) -> Path:
+        return self.dir / "session_state.json"
+
+    def save_session_state(self, state: dict) -> None:
+        try:
+            self.session_state_file.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+    def load_session_state(self) -> dict:
+        if self.session_state_file.exists():
+            try:
+                return json.loads(self.session_state_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                return {}
+        return {}
+
+    def clear_session_state(self) -> None:
+        try:
+            self.session_state_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def add_history(self, entry: dict) -> None:
         history = self.load_history()
@@ -1066,3 +1142,127 @@ def create_restore_point(description: str = "FocusIt - przed sesja optymalizacji
                 "administrator; Windows pozwala na 1 punkt na 24 h).")
     except Exception as exc:
         return f"Punkt przywracania: błąd ({exc})."
+
+
+# ---------------------------------------------------------------------------
+# v1.2: zamrażanie procesów, powinowactwo CPU, aktualizacje, odzyskiwanie
+# ---------------------------------------------------------------------------
+
+def parse_affinity(text: str) -> list[int]:
+    """'0-3,5' -> [0, 1, 2, 3, 5]; błędne wpisy są ignorowane."""
+    out: list[int] = []
+    for part in (text or "").replace(" ", "").split(","):
+        if not part:
+            continue
+        try:
+            if "-" in part:
+                a, b = part.split("-", 1)
+                out.extend(range(int(a), int(b) + 1))
+            else:
+                out.append(int(part))
+        except ValueError:
+            continue
+    max_cpu = os.cpu_count() or 64
+    return sorted({c for c in out if 0 <= c < max_cpu})
+
+
+def set_cpu_affinity(pid: int, cpus: list[int]) -> str:
+    if not cpus:
+        return ""
+    try:
+        psutil.Process(pid).cpu_affinity(cpus)
+        return f"Powinowactwo CPU dla PID {pid}: rdzenie {cpus}."
+    except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError) as exc:
+        return f"Powinowactwo CPU: nie udało się ustawić ({exc})."
+
+
+def suspend_processes(infos: list[ProcessInfo],
+                      log: Callable[[str], None] = print) -> list[ProcessInfo]:
+    """Zamraża (wstrzymuje) procesy — odwracalne, bez utraty danych."""
+    done: list[ProcessInfo] = []
+    for info in infos:
+        try:
+            proc = psutil.Process(info.pid)
+            if abs((proc.create_time() or 0) - (info.create_time or 0)) > 1.0:
+                continue
+            fresh = ProcessInfo(pid=proc.pid, name=proc.name(),
+                                exe=proc.exe() or "", create_time=info.create_time)
+            if fresh.name.lower() in HARD_PROTECTED_NAMES or is_system_path(fresh.exe):
+                continue
+            proc.suspend()
+            done.append(info)
+            log(f"Zamrożono: {info.name} (PID {info.pid})")
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+            log(f"Nie udało się zamrozić {info.name}: {exc}")
+    return done
+
+
+def resume_processes(pids: Iterable[int],
+                     log: Callable[[str], None] = print) -> int:
+    count = 0
+    for pid in pids:
+        try:
+            proc = psutil.Process(pid)
+            if proc.status() == psutil.STATUS_STOPPED:
+                proc.resume()
+                count += 1
+                log(f"Odmrożono proces PID {pid}.")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return count
+
+
+def parse_version(text: str) -> tuple[int, ...]:
+    nums = re.findall(r"\d+", text or "")
+    return tuple(int(n) for n in nums) if nums else (0,)
+
+
+def is_newer_version(latest: str, current: str) -> bool:
+    return parse_version(latest) > parse_version(current)
+
+
+def check_for_update(current_version: str, timeout: int = 8) -> Optional[dict]:
+    """Sprawdza najnowszy Release na GitHubie. None = brak danych/błąd sieci."""
+    import urllib.request
+    url = "https://api.github.com/repos/rejson59/FocusIt/releases/latest"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "FocusIt"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        tag = data.get("tag_name", "")
+        return {"latest": tag,
+                "url": data.get("html_url", ""),
+                "is_newer": is_newer_version(tag, current_version)}
+    except Exception:
+        return None
+
+
+def recover_previous_session(store: "FocusStore",
+                             log: Callable[[str], None] = print) -> list[str]:
+    """
+    Po awarii/zabiciu FocusIt: odmraża zamrożone procesy, przywraca plan
+    zasilania i (opcjonalnie) ponownie otwiera zamknięte aplikacje.
+    """
+    messages: list[str] = []
+    state = store.load_session_state()
+    if not state:
+        return messages
+    suspended = state.get("suspended_pids", [])
+    if suspended:
+        n = resume_processes(suspended, log=log)
+        messages.append(f"Odmrożono {n} procesów po poprzedniej sesji.")
+    power_guid = state.get("power_guid")
+    if power_guid:
+        manager = PowerPlanManager()
+        msg = manager.restore_to(power_guid)
+        messages.append(msg)
+        log(msg)
+    if store.settings.get("restore_apps_after_session", True):
+        for exe in state.get("killed_exes", []):
+            if exe and Path(exe).exists():
+                log(launch_app(exe))
+        if state.get("killed_exes"):
+            messages.append("Ponownie uruchomiono aplikacje zamknięte "
+                            "w przerwanej sesji.")
+    store.clear_session_state()
+    return messages

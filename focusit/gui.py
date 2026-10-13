@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
 import time
 import tkinter as tk
 from collections import deque
@@ -11,10 +12,11 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .core import (FocusSession, FocusStore, GameEntry, ProcessInfo,
-                   create_restore_point, execute_temp_clean, find_target_pid,
-                   get_gpu_stats, get_system_stats, launch_app, list_autostart,
-                   list_processes, preview_temp_clean, scan_game_library,
-                   set_autostart_enabled)
+                   check_for_update, create_restore_point, execute_temp_clean,
+                   find_target_pid, get_gpu_stats, get_system_stats, launch_app,
+                   list_autostart, list_processes, parse_affinity,
+                   preview_temp_clean, recover_previous_session,
+                   scan_game_library, set_autostart_enabled)
 
 BG = "#0B0E14"
 PANEL = "#141926"
@@ -80,6 +82,75 @@ class FocusItApp:
         self.log("Witaj w FocusIt! Wybierz grę, preset i kliknij URUCHOM SESJĘ.")
         self.log("Domyślnie włączona jest SYMULACJA — program tylko pokaże, "
                  "co by zamknął, niczego nie zabijając. Odznacz ją, gdy będziesz gotowy.")
+        self._recover_if_needed()
+        self._maybe_onboard()
+        self._hotkey_tick()
+        if self.store.settings.get("check_updates", True):
+            threading.Thread(target=self._check_update_bg, daemon=True).start()
+
+    # ------------------------------------------------------- start programu
+    def _recover_if_needed(self) -> None:
+        if not self.store.load_session_state():
+            return
+        self.log("⚠ Wykryto przerwaną sesję (np. awaria programu) — przywracam stan…")
+        try:
+            for msg in recover_previous_session(self.store, log=self.log):
+                self.log(f"Odzyskiwanie: {msg}")
+        except Exception as exc:
+            self.log(f"Odzyskiwanie nie powiodło się: {exc}")
+
+    def _maybe_onboard(self) -> None:
+        if self.store.settings.get("onboarded"):
+            return
+        self.store.settings["onboarded"] = True
+        self.store.save()
+        messagebox.showinfo(
+            "Witaj w FocusIt! 🎮",
+            "Jak zacząć w 30 sekund:\n\n"
+            "1. Zakładka „Biblioteka gier” — kliknij swoją grę (albo wybierz ją "
+            "z listy na Panelu).\n"
+            "2. Kliknij „Podgląd planu”, żeby zobaczyć, co program zamknie, "
+            "a co chroni.\n"
+            "3. Na start zostaw włączoną SYMULACJĘ. Gdy plan wygląda dobrze, "
+            "odznacz ją i kliknij URUCHOM SESJĘ.\n"
+            "4. Po graniu: ZAKOŃCZ I PRZYWRÓĆ — wszystko wraca na miejsce.\n\n"
+            "Skrót: Ctrl+Alt+F startuje/kończy sesję. Miłej gry!")
+
+    def _check_update_bg(self) -> None:
+        from . import __version__
+        result = check_for_update(__version__)
+        if result and result.get("is_newer"):
+            self.root.after(0, lambda: self.log(
+                f"⬆ Dostępna nowa wersja FocusIt: {result['latest']} "
+                f"(masz {__version__}) — pobierz z zakładki Releases na GitHubie: "
+                f"{result['url']}"))
+
+    # ------------------------------------------------------------- skrót klaw.
+    def _hotkey_tick(self) -> None:
+        """Ctrl+Alt+F: start/stop sesji (Windows, bez dodatkowych bibliotek)."""
+        try:
+            if self.store.settings.get("hotkey_enabled", True):
+                import ctypes
+                user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+                pressed = (user32.GetAsyncKeyState(0x11) & 0x8000 and   # Ctrl
+                           user32.GetAsyncKeyState(0x12) & 0x8000 and   # Alt
+                           user32.GetAsyncKeyState(0x46) & 0x8000)      # F
+                if pressed and not getattr(self, "_hk_prev", False):
+                    if self.session and self.session.active:
+                        self.log("Skrót Ctrl+Alt+F: kończę sesję.")
+                        self.stop_session(silent=True)
+                        messagebox.showinfo("FocusIt", "Sesja zakończona skrótem "
+                                                       "Ctrl+Alt+F. Ustawienia przywrócone.")
+                    elif self.selected_game or getattr(self, "_custom_exe", ""):
+                        self.log("Skrót Ctrl+Alt+F: startuję sesję.")
+                        self.start_session(from_auto=True)
+                    else:
+                        self.log("Skrót Ctrl+Alt+F: najpierw wybierz grę "
+                                 "(Biblioteka albo Panel).")
+                self._hk_prev = bool(pressed)
+        except Exception:
+            pass
+        self.root.after(150, self._hotkey_tick)
 
     # ------------------------------------------------------------------ styl
     def _style(self) -> None:
@@ -192,6 +263,10 @@ class FocusItApp:
                                   font=("Segoe UI", 8), justify="left",
                                   wraplength=300)
         self.top_label.pack(anchor="w", pady=4)
+        self.sug_label = tk.Label(side, text="", bg=CARD, fg=GOLD,
+                                  font=("Segoe UI", 8), justify="left",
+                                  wraplength=300)
+        self.sug_label.pack(anchor="w")
 
         # --- cel ---
         box = tk.LabelFrame(f, text=" 1. Gra / program, na którym Ci zależy ",
@@ -252,6 +327,14 @@ class FocusItApp:
                        selectcolor=CARD, font=("Segoe UI", 9, "bold")).pack(side="left")
         tk.Label(row4, text="Odznacz dopiero, gdy plan wygląda dobrze.",
                  bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(side="left", padx=8)
+        row5 = tk.Frame(box2, bg=BG)
+        row5.pack(fill="x", padx=10, pady=(0, 8))
+        self.freeze_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(row5, text="❄ Zamiast zabijać — ZAMRAŻAJ procesy (bezpieczniej: "
+                                  "nic nie tracą, wracają po sesji)",
+                       variable=self.freeze_var, bg=BG, fg=TEXT,
+                       activebackground=BG, activeforeground=TEXT,
+                       selectcolor=CARD, font=("Segoe UI", 9)).pack(side="left")
 
         # --- akcje ---
         actions = tk.Frame(f, bg=BG)
@@ -425,6 +508,13 @@ class FocusItApp:
             tk.Radiobutton(mrow, text=txt, value=val, variable=mode_var,
                            bg=BG, fg=TEXT, activebackground=BG,
                            selectcolor=CARD).pack(side="left", padx=6)
+        tk.Label(win, text="Rdzenie CPU dla gry (opcjonalnie, np. 0-7; "
+                           "puste = wszystkie):", bg=BG, fg=TEXT,
+                 font=("Segoe UI", 9)).pack(padx=16, anchor="w", pady=(8, 0))
+        affinity_var = tk.StringVar(value=prof.get("affinity", ""))
+        tk.Entry(win, textvariable=affinity_var, bg=CARD, fg=TEXT, relief="flat",
+                 font=("Segoe UI", 10), insertbackground=TEXT).pack(
+                     fill="x", padx=16, pady=4)
 
         def save() -> None:
             new_prof = dict(prof)
@@ -433,6 +523,7 @@ class FocusItApp:
                 "keep_apps": self._split(fields["keep_apps"].get()),
                 "close_apps": self._split(fields["close_apps"].get()),
                 "mode": mode_var.get(),
+                "affinity": affinity_var.get().strip(),
             })
             self.store.set_game_profile(game.exe, new_prof)
             self.log(f"Zapisano profil gry „{game.name}”.")
@@ -748,6 +839,10 @@ class FocusItApp:
             self.hist_tree.heading(col, text=txt)
             self.hist_tree.column(col, width=w)
         self.hist_tree.pack(fill="both", expand=True, padx=22, pady=8)
+        tk.Label(f, text="Zwolniony RAM w ostatnich sesjach (MB):", bg=BG,
+                 fg=MUTED, font=("Segoe UI", 9)).pack(padx=22, anchor="w")
+        self.hist_chart = tk.Canvas(f, bg=CARD, height=110, highlightthickness=0)
+        self.hist_chart.pack(fill="x", padx=22, pady=4)
         self.hist_stats = tk.Label(f, text="", bg=BG, fg=MUTED,
                                    font=("Segoe UI", 10))
         self.hist_stats.pack(padx=22, pady=6, anchor="w")
@@ -769,6 +864,8 @@ class FocusItApp:
         self.set_auto = tk.BooleanVar()
         self.set_auto_stop = tk.BooleanVar()
         self.set_widget = tk.BooleanVar()
+        self.set_hotkey = tk.BooleanVar()
+        self.set_updates = tk.BooleanVar()
         for var, txt in [
             (self.set_sim, "Domyślnie włączaj SYMULACJĘ przy starcie programu"),
             (self.set_restore_apps, "Po sesji ponownie uruchamiaj zamknięte aplikacje"),
@@ -777,6 +874,8 @@ class FocusItApp:
             (self.set_auto, "AUTO-SESJA: sam startuj sesję, gdy wykryjesz grę z Biblioteki"),
             (self.set_auto_stop, "AUTO-STOP: kończ auto-sesję po zamknięciu gry"),
             (self.set_widget, "Pokazuj mini-widget podczas sesji"),
+            (self.set_hotkey, "Skrót globalny Ctrl+Alt+F (start/stop sesji)"),
+            (self.set_updates, "Sprawdzaj nowe wersje programu przy starcie"),
         ]:
             tk.Checkbutton(f, text=txt, variable=var, bg=BG, fg=TEXT,
                            activebackground=BG, activeforeground=TEXT,
@@ -870,9 +969,21 @@ class FocusItApp:
                 text=(f"{g['percent']:.0f}% / {g['temp_c']:.0f}°C" if g
                       else "— (tylko NVIDIA)"))
             if self._tick_count % 10 == 1:
-                top = [p for p in list_processes() if p.exe][:5]
+                procs = [p for p in list_processes() if p.exe]
+                top = procs[:5]
                 self.top_label.configure(text="Najcięższe procesy:\n" + "\n".join(
                     f"• {p.name} — {p.memory_mb:.0f} MB" for p in top))
+                heavy = {"chrome.exe", "firefox.exe", "msedge.exe", "spotify.exe",
+                         "steamwebhelper.exe", "discord.exe", "teams.exe",
+                         "onedrive.exe", "skype.exe"}
+                keep = {k.lower() for k in
+                        self.store.settings.get("keep_always", [])}
+                tips = [f"{p.name} ({p.memory_mb:.0f} MB)" for p in procs
+                        if p.name.lower() in heavy and p.memory_mb > 250
+                        and p.name.lower() not in keep][:3]
+                self.sug_label.configure(
+                    text=("💡 Sugestia: przed grą warto zamknąć: "
+                          + ", ".join(tips)) if tips else "")
             if self._tick_count % 3 == 0:
                 self._auto_check()
         except Exception:
@@ -1055,6 +1166,11 @@ class FocusItApp:
                                        | set(prof.get("keep_apps", [])))
             preset["close_apps"] = list(set(preset.get("close_apps", []))
                                         | set(prof.get("close_apps", [])))
+            affinity = parse_affinity(prof.get("affinity", ""))
+            if affinity:
+                preset["cpu_affinity"] = affinity
+        preset["freeze_processes"] = bool(
+            getattr(self, "freeze_var", tk.BooleanVar(value=False)).get())
         return preset
 
     def _make_session(self) -> FocusSession:
@@ -1193,6 +1309,9 @@ class FocusItApp:
             text=f"● Sesja aktywna: {preset['name']} ({mode_txt})", fg=GREEN)
         self.session_label.configure(text="⏱ Sesja: 00:00:00")
         self.log(f"=== Sesja „{preset['name']}” rozpoczęta ({mode_txt}) ===")
+        if not simulate:
+            # zapis stanu: gdyby FocusIt padł, następny start wszystko przywróci
+            self.store.save_session_state(self.session.state_dict())
         if self.store.settings.get("show_session_widget", True):
             self._show_widget()
         self.refresh_targets()
@@ -1202,6 +1321,7 @@ class FocusItApp:
             return
         summary = self.session.stop()
         self.store.add_history(summary)
+        self.store.clear_session_state()
         self.session = None
         self.auto_started = False
         self._hide_widget()
@@ -1212,6 +1332,7 @@ class FocusItApp:
         self.refresh_history()
         self.refresh_targets()
         self.log(f"=== Sesja zakończona. Zamknięte: {summary['killed_count']}, "
+                 f"zamrożone: {summary.get('suspended_count', 0)}, "
                  f"szac. zwolniono: {summary['estimated_freed_mb']:.0f} MB, "
                  f"czas: {summary['duration_sec'] // 60} min ===")
         if not silent:
@@ -1246,6 +1367,22 @@ class FocusItApp:
             text=f"Razem: {len(history)} sesji • zamknięte procesy: {total_killed} • "
                  f"szac. zwolniony RAM: {total_ram:.0f} MB • "
                  f"łączny czas sesji: {total_sec // 3600} h {(total_sec % 3600) // 60} min")
+        # wykres słupkowy: ostatnie 15 sesji
+        c = self.hist_chart
+        c.delete("all")
+        recent = list(reversed(history[:15]))
+        if recent:
+            w = max(c.winfo_width(), 400)
+            maxv = max((h.get("estimated_freed_mb", 0) for h in recent), default=1) or 1
+            step = w / len(recent)
+            for i, h in enumerate(recent):
+                v = h.get("estimated_freed_mb", 0)
+                bh = 12 + (v / maxv) * 78
+                x0 = i * step + 6
+                c.create_rectangle(x0, 100 - bh, x0 + step - 12, 100,
+                                   fill=ACCENT, outline="")
+                c.create_text(x0 + (step - 12) / 2, 106, anchor="n",
+                              text=f"{v:.0f}", fill=MUTED, font=("Segoe UI", 7))
 
     # ------------------------------------------------------------- ustawienia
     def _load_settings_to_ui(self) -> None:
@@ -1259,6 +1396,8 @@ class FocusItApp:
         self.set_auto.set(s.get("auto_session", False))
         self.set_auto_stop.set(s.get("auto_stop", True))
         self.set_widget.set(s.get("show_session_widget", True))
+        self.set_hotkey.set(s.get("hotkey_enabled", True))
+        self.set_updates.set(s.get("check_updates", True))
 
     def _save_settings(self) -> None:
         s = self.store.settings
@@ -1271,6 +1410,8 @@ class FocusItApp:
         s["auto_session"] = self.set_auto.get()
         s["auto_stop"] = self.set_auto_stop.get()
         s["show_session_widget"] = self.set_widget.get()
+        s["hotkey_enabled"] = self.set_hotkey.get()
+        s["check_updates"] = self.set_updates.get()
         self.store.save()
         self.sim_var.set(s["simulation_by_default"])
         self.log("Zapisano ustawienia.")
