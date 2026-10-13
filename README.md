@@ -56,9 +56,13 @@ pip install -r requirements.txt
 python FocusIt.py
 ```
 
+<<<<<<< HEAD
 **Sposób 0 — gotowy plik .exe (bez instalacji czegokolwiek):** pobierz `FocusIt.exe` z zakładki **[Releases](../../releases)** tego repozytorium i po prostu go uruchom (jeden plik, nic nie trzeba instalować).
 
 **Sposób 3 — własny plik .exe:** dwuklik na **`build_windows.bat`** — w folderze `dist\` powstanie gotowy, pojedynczy `FocusIt.exe`. (To samo robi automatycznie GitHub Actions — plik `.github/workflows/build-exe.yml`.)
+=======
+**Sposób 3 — własny plik .exe:** dwuklik na **`build_windows.bat`** — w folderze `dist\FocusIt\` powstanie gotowy `FocusIt.exe`.
+>>>>>>> origin/arena/ae6d22e5-focusit
 
 > Wskazówka: dla pełnego efektu (priorytet procesów, plan zasilania) uruchom program jako administrator — prawy przycisk myszy → *Uruchom jako administrator*.
 
