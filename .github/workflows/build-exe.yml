@@ -1,0 +1,46 @@
+name: Budowanie FocusIt.exe (Windows)
+
+on:
+  workflow_dispatch:        # ręczne uruchomienie z zakładki Actions
+  push:
+    tags: ["v*"]            # oraz przy każdym tagu wersji, np. v1.0.0
+
+permissions:
+  contents: write   # potrzebne, aby opublikowac .exe w Releases
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Pobranie kodu
+        uses: actions/checkout@v4
+
+      - name: Instalacja Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalacja zależności
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Testy bezpieczeństwa silnika
+        run: python -m unittest discover -s tests -v
+
+      - name: Budowanie jednego pliku FocusIt.exe
+        run: pyinstaller --noconfirm --onefile --windowed --name FocusIt --icon assets/focusit.ico --add-data "assets;assets" FocusIt.py
+
+      - name: Wgranie gotowego .exe jako artefakt
+        uses: actions/upload-artifact@v4
+        with:
+          name: FocusIt-Windows
+          path: dist/FocusIt.exe
+          if-no-files-found: error
+
+      - name: Publikacja FocusIt.exe w zakładce Releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ github.ref_name }} dist/FocusIt.exe --clobber 2>$null; if ($LASTEXITCODE -ne 0) { gh release create ${{ github.ref_name }} dist/FocusIt.exe --title "FocusIt ${{ github.ref_name }}" --notes "Gotowy program FocusIt dla Windows - jeden plik FocusIt.exe, bez instalacji. Pobierz FocusIt.exe z sekcji Assets ponizej i uruchom (dla pelnego efektu: jako administrator). Przy pierwszym starcie wlaczona jest SYMULACJA - program tylko pokazuje plan zamykania procesow." }
