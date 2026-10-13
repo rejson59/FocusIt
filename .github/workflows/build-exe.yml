@@ -29,11 +29,7 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Budowanie jednego pliku FocusIt.exe
-<<<<<<< HEAD
         run: pyinstaller --noconfirm --onefile --windowed --name FocusIt --icon assets/focusit.ico --add-data "assets;assets" FocusIt.py
-=======
-        run: pyinstaller --noconfirm --onefile --windowed --name FocusIt FocusIt.py
->>>>>>> origin/arena/ae6d22e5-focusit
 
       - name: Wgranie gotowego .exe jako artefakt
         uses: actions/upload-artifact@v4
