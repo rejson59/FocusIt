@@ -1,5 +1,13 @@
 # Historia zmian FocusIt
 
+## v1.5.0 — Neon Honeycomb Game Bar
+- ⬢ **Całkowicie nowy motyw „Neon Honeycomb”**: matowa czerń, neonowa zieleń i plastry miodu z rozproszoną poświatą (menu boczne, baner „Gotowy do gry?”, ramki, wykresy, nakładki).
+- 🎴 Karty statystyk i presetów dopasowane do motywu (neonowe paski obciążenia, podświetlenia, status SYSTEM GOTOWY / SESJA AKTYWNA).
+- 🪟 Nakładki w grze w tym samym klimacie: ciemne, półprzezroczyste, z neonową ramką.
+- ⚡ Nowa ikona programu: neonowy błysk na plastrach miodu.
+- 🎨 Przełącznik motywu w Ustawieniach: **Neon Honeycomb** albo klasyczny grafitowo-fioletowy (wymaga restartu programu).
+- 🖼 Wizualizacja motywu w README (docs/neon-gamebar-preview.png).
+
 ## v1.4.0 — test sprzętu, auto-dopasowanie, nakładki
 - 🧪 **Test możliwości urządzenia**: benchmark CPU (wszystkie rdzenie), RAM, dysku i GPU; ocena klasy sprzętu (Słaby/Średni/Mocny/Top, 0–100) i konkretne rekomendacje.
 - 🎨 **Automatyczne dopasowanie grafiki w grach Unreal Engine** (np. Fortnite): FocusIt zapisuje ustawienia `GameUserSettings.ini` dopasowane do klasy sprzętu — zawsze z kopią zapasową i przyciskiem przywracania.

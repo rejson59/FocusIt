@@ -159,6 +159,7 @@ DEFAULT_SETTINGS = {
     "overlay_widgets": ["czas", "statystyki", "przyciski"],
     "overlay_positions": {},        # zapamiętane pozycje widżetów {nazwa: [x, y]}
     "last_benchmark": {},           # ostatni wynik testu sprzętu
+    "theme": "neon",                # neon (czerń+zieleń) | classic (fiolet)
 }
 
 

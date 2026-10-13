@@ -1,5 +1,9 @@
 # ⚡ FocusIt
 
+![Motyw Neon Honeycomb — wizualizacja interfejsu FocusIt](docs/neon-gamebar-preview.png)
+
+*Motyw **Neon Honeycomb**: matowa czerń, neonowa zieleń i plastry miodu. Wizualizacja układu — prawdziwy program w pliku .exe wygląda tak samo (kolory, karty, baner).* 
+
 Program, który **jednym kliknięciem przygotowuje komputer do grania** (a przy okazji też do nauki czy pracy): zamyka wszystko, co niepotrzebnie zjada RAM i procesor, włącza wysoką wydajność i zostawia tylko to, na czym Ci zależy. Po sesji przywraca poprzedni stan.
 
 > Program skupia się na **grach**. Pozostałe presety (Nauka, Praca, Tworzenie) są dodatkami.
@@ -62,7 +66,7 @@ python FocusIt.py
 
 > Wskazówka: dla pełnego efektu (priorytet procesów, plan zasilania) uruchom program jako administrator — prawy przycisk myszy → *Uruchom jako administrator*.
 
-## 🖥️ Co potrafi program (v1.4)
+## 🖥️ Co potrafi program (v1.5)
 
 - **Panel gry** — gamingowy baner „Gotowy do gry?”, statystyki CPU/RAM/GPU na żywo z **wykresem i paskami obciążenia**, lista najcięższych procesów, presety jako klikalne karty, wielki przycisk start/stop sesji, dziennik zdarzeń,
 - **🎮 Biblioteka gier** — automatyczne wykrywanie gier ze **Steam, Epic i GOG** (z okładkami Steama), dodawanie gier ręcznie oraz **własny profil dla każdej gry** (co zachować, co zamykać, tryb sesji),

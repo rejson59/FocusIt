@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import threading
 import time
 import tkinter as tk
@@ -22,17 +23,78 @@ from .core import (SERVICE_CANDIDATES, BenchmarkResult, FocusSession,
                    set_autostart_enabled, set_game_gpu_preference,
                    ue_current_settings, ue_recommended_changes)
 
-BG = "#080A10"
-PANEL = "#0F1420"
-CARD = "#171E2E"
-CARD_HOVER = "#212B42"
-TEXT = "#EDF1F9"
-MUTED = "#8A94A8"
-ACCENT = "#8B5CF6"      # fiolet — kolor marki
-CYAN = "#22D3EE"        # drugi kolor marki (gradient)
-GREEN = "#22C55E"       # start / gry
-RED = "#EF4444"
-GOLD = "#F5C518"
+BG = "#060706"          # matowa czerń
+PANEL = "#090B09"
+CARD = "#10130E"
+CARD_HOVER = "#182114"
+TEXT = "#F2FFF5"
+MUTED = "#8FA393"
+ACCENT = "#00C853"      # neonowa zieleń — kolor marki
+NEON = "#39FF14"        # jasny neon do poświat i ramek
+CYAN = "#B7FF3C"        # limonka (drugi kolor wykresów)
+GREEN = "#00E65A"       # start / gry
+RED = "#FF3B30"
+GOLD = "#FFC400"
+BORDER = "#20331B"      # przygaszona zieleń ramek
+
+_CLASSIC = {"BG": "#080A10", "PANEL": "#0F1420", "CARD": "#171E2E",
+            "CARD_HOVER": "#212B42", "TEXT": "#EDF1F9", "MUTED": "#8A94A8",
+            "ACCENT": "#8B5CF6", "NEON": "#8B5CF6", "CYAN": "#22D3EE",
+            "GREEN": "#22C55E", "BORDER": "#232C42"}
+
+
+def apply_theme(theme: str) -> None:
+    """Ustawia paletę kolorów (neon = matowa czerń + zielone neony)."""
+    global BG, PANEL, CARD, CARD_HOVER, TEXT, MUTED, ACCENT, NEON, CYAN, GREEN, BORDER
+    if theme == "classic":
+        vals = _CLASSIC
+        BG, PANEL, CARD, CARD_HOVER, TEXT, MUTED = (vals["BG"], vals["PANEL"],
+                                                    vals["CARD"], vals["CARD_HOVER"],
+                                                    vals["TEXT"], vals["MUTED"])
+        ACCENT, NEON, CYAN, GREEN, BORDER = (vals["ACCENT"], vals["NEON"],
+                                             vals["CYAN"], vals["GREEN"],
+                                             vals["BORDER"])
+    else:
+        BG, PANEL, CARD, CARD_HOVER, TEXT, MUTED = ("#060706", "#090B09",
+                                                    "#10130E", "#182114",
+                                                    "#F2FFF5", "#8FA393")
+        ACCENT, NEON, CYAN, GREEN, BORDER = ("#00C853", "#39FF14", "#B7FF3C",
+                                             "#00E65A", "#20331B")
+
+
+def _hex_points(cx: float, cy: float, r: float) -> list[float]:
+    pts: list[float] = []
+    for i in range(6):
+        ang = math.radians(60 * i)
+        pts += [cx + r * math.cos(ang), cy + r * math.sin(ang)]
+    return pts
+
+
+def draw_honeycomb(canvas, w: int, h: int, r: int = 24,
+                   bg: str = "#070806") -> None:
+    """Matowe tło z plastrami miodu i rozproszoną neonową poświatą."""
+    canvas.delete("all")
+    canvas.create_rectangle(0, 0, w, h, fill=bg, outline="")
+    dx, dy = r * 1.5, r * math.sqrt(3)
+    col = 0
+    x = -r
+    while x < w + r:
+        offset = (dy / 2) if col % 2 else 0
+        row = 0
+        y = -r + offset
+        while y < h + r:
+            glow = (col * 11 + row * 7) % 17 == 0
+            pts = _hex_points(x, y, r - 2)
+            if glow:
+                canvas.create_polygon(_hex_points(x, y, r + 3), outline="#0E3D16",
+                                      fill="", width=5)
+                canvas.create_polygon(pts, outline=NEON, fill="#0B1A0C", width=2)
+            else:
+                canvas.create_polygon(pts, outline="#18301B", fill="", width=1)
+            y += dy
+            row += 1
+        x += dx
+        col += 1
 
 
 def _lerp_color(c1: str, c2: str, t: float) -> str:
@@ -52,6 +114,7 @@ class FocusItApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.store = FocusStore()
+        apply_theme(self.store.settings.get("theme", "neon"))
         self.session: FocusSession | None = None
         self.session_started = 0.0
         self.pomodoro_phase = "focus"
@@ -194,12 +257,13 @@ class FocusItApp:
 
         from . import __version__
         self.version = __version__
-        tk.Label(sidebar, text="⚡ FocusIt", bg=PANEL, fg=TEXT,
-                 font=("Segoe UI", 21, "bold")).pack(pady=(22, 0), padx=18, anchor="w")
-        tk.Label(sidebar, text="100% mocy dla Twojej gry", bg=PANEL, fg=CYAN,
-                 font=("Segoe UI", 9, "bold")).pack(padx=18, anchor="w")
-        tk.Label(sidebar, text=f"wersja {__version__}", bg=PANEL, fg=MUTED,
-                 font=("Segoe UI", 8)).pack(padx=18, pady=(2, 12), anchor="w")
+        self.side_canvas = tk.Canvas(sidebar, bg=PANEL, height=104,
+                                     highlightthickness=0)
+        self.side_canvas.pack(fill="x")
+        self.root.after(100, self._draw_sidebar)
+        tk.Label(sidebar, text=f"wersja {__version__}  •  game bar", bg=PANEL,
+                 fg=MUTED, font=("Segoe UI", 8)).pack(padx=18, pady=(0, 10),
+                                                      anchor="w")
 
         self.nav_buttons: dict[str, tk.Button] = {}
         for key, label in PAGES:
@@ -263,7 +327,7 @@ class FocusItApp:
         for key, title in [("cpu", "CPU"), ("ram", "RAM"), ("gpu", "GPU / temp."),
                            ("free", "Wolny RAM"), ("procs", "Procesy")]:
             card = tk.Frame(stats, bg=CARD, highlightthickness=1,
-                            highlightbackground="#232C42")
+                            highlightbackground=BORDER)
             card.pack(side="left", fill="x", expand=True, padx=4)
             tk.Label(card, text=title, bg=CARD, fg=MUTED,
                      font=("Segoe UI", 8, "bold")).pack(pady=(8, 0))
@@ -283,9 +347,9 @@ class FocusItApp:
         self.chart.pack(side="left", fill="x", expand=True)
         side = tk.Frame(chart_box, bg=CARD)
         side.pack(side="left", fill="y", padx=10, pady=6)
-        tk.Label(side, text="■ CPU", bg=CARD, fg=ACCENT,
+        tk.Label(side, text="■ CPU", bg=CARD, fg=NEON,
                  font=("Segoe UI", 8, "bold")).pack(anchor="w")
-        tk.Label(side, text="■ RAM", bg=CARD, fg=GREEN,
+        tk.Label(side, text="■ RAM", bg=CARD, fg=CYAN,
                  font=("Segoe UI", 8, "bold")).pack(anchor="w")
         self.top_label = tk.Label(side, text="Top procesów: —", bg=CARD, fg=MUTED,
                                   font=("Segoe UI", 8), justify="left",
@@ -438,7 +502,7 @@ class FocusItApp:
         bar = tk.Frame(f, bg=BG)
         bar.pack(fill="x", padx=22, pady=4)
         tk.Button(bar, text="↻ Skanuj dysk (Steam/Epic/GOG)", bg=ACCENT,
-                  fg="white", relief="flat", padx=14, pady=6, cursor="hand2",
+                  fg="#03150A", relief="flat", padx=14, pady=6, cursor="hand2",
                   font=("Segoe UI", 10, "bold"),
                   command=self.refresh_library).pack(side="left")
         tk.Button(bar, text="📂 Dodaj grę ręcznie…", bg=CARD, fg=TEXT,
@@ -487,7 +551,7 @@ class FocusItApp:
         self._tile_frames: dict[str, tk.Frame] = {}
         for i, game in enumerate(self.games):
             tile = tk.Frame(self.lib_frame, bg=CARD, highlightthickness=2,
-                            highlightbackground="#232C42")
+                            highlightbackground=BORDER)
             tile.grid(row=i // cols, column=i % cols, padx=6, pady=6, sticky="nsew")
             self._tile_frames[game.exe.lower()] = tile
 
@@ -497,7 +561,7 @@ class FocusItApp:
             def unhover(_e, t=tile, g=game):
                 sel = self.selected_game and \
                     self.selected_game.exe.lower() == g.exe.lower()
-                t.configure(highlightbackground=ACCENT if sel else "#232C42")
+                t.configure(highlightbackground=ACCENT if sel else BORDER)
 
             tile.bind("<Enter>", hover)
             tile.bind("<Leave>", unhover)
@@ -533,7 +597,7 @@ class FocusItApp:
         self.selected_game = game
         for key, tile in getattr(self, "_tile_frames", {}).items():
             tile.configure(highlightbackground=ACCENT
-                           if key == game.exe.lower() else "#232C42")
+                           if key == game.exe.lower() else BORDER)
         if game.exe:
             self._custom_exe = game.exe
             self.target_combo.set(Path(game.exe).name)
@@ -612,7 +676,7 @@ class FocusItApp:
             self.refresh_library()
             win.destroy()
 
-        tk.Button(win, text="💾 Zapisz profil", bg=ACCENT, fg="white",
+        tk.Button(win, text="💾 Zapisz profil", bg=ACCENT, fg="#03150A",
                   font=("Segoe UI", 11, "bold"), relief="flat", padx=16, pady=6,
                   cursor="hand2", command=save).pack(padx=16, pady=14, anchor="w")
 
@@ -635,7 +699,7 @@ class FocusItApp:
                                     bg=BG, fg=TEXT, font=("Segoe UI", 9),
                                     justify="left", wraplength=640)
         self.health_tips.pack(side="left", padx=14)
-        tk.Button(hrow, text="🔎 Przeanalizuj", bg=ACCENT, fg="white",
+        tk.Button(hrow, text="🔎 Przeanalizuj", bg=ACCENT, fg="#03150A",
                   relief="flat", padx=14, pady=6, cursor="hand2",
                   font=("Segoe UI", 10, "bold"),
                   command=self._analyze_health).pack(side="right")
@@ -969,7 +1033,7 @@ class FocusItApp:
                  relief="flat", width=10, insertbackground=TEXT).grid(
                      row=r, column=1, sticky="w")
         r += 1
-        tk.Button(form, text="💾 Zapisz preset", bg=ACCENT, fg="white",
+        tk.Button(form, text="💾 Zapisz preset", bg=ACCENT, fg="#03150A",
                   font=("Segoe UI", 11, "bold"), relief="flat", padx=18, pady=7,
                   cursor="hand2", command=self._save_preset).grid(
                       row=r, column=1, sticky="w", pady=12)
@@ -984,7 +1048,7 @@ class FocusItApp:
         bar = tk.Frame(f, bg=BG)
         bar.pack(fill="x", padx=22, pady=4)
         tk.Button(bar, text="👁 Oblicz plan dla wybranej gry", bg=ACCENT,
-                  fg="white", relief="flat", padx=14, pady=6, cursor="hand2",
+                  fg="#03150A", relief="flat", padx=14, pady=6, cursor="hand2",
                   font=("Segoe UI", 10, "bold"),
                   command=self.preview_plan).pack(side="left")
         tk.Label(bar, text="Szukaj:", bg=BG, fg=TEXT).pack(side="left", padx=(16, 4))
@@ -1027,7 +1091,7 @@ class FocusItApp:
                                      font=("Segoe UI", 9))
         self.bench_status.pack(side="left", padx=12)
         tk.Button(bar, text="✔ Zastosuj rekomendacje do FocusIt", bg=ACCENT,
-                  fg="white", relief="flat", padx=14, pady=9, cursor="hand2",
+                  fg="#03150A", relief="flat", padx=14, pady=9, cursor="hand2",
                   font=("Segoe UI", 10, "bold"),
                   command=self._apply_recommendations).pack(side="left")
 
@@ -1038,7 +1102,7 @@ class FocusItApp:
                            ("disk", "Dysk"), ("gpu", "Karta graficzna"),
                            ("tier", "Klasa sprzętu")]:
             card = tk.Frame(cards, bg=CARD, highlightthickness=1,
-                            highlightbackground="#232C42")
+                            highlightbackground=BORDER)
             card.pack(side="left", fill="x", expand=True, padx=4)
             tk.Label(card, text=title, bg=CARD, fg=MUTED,
                      font=("Segoe UI", 8, "bold")).pack(pady=(8, 0))
@@ -1257,7 +1321,26 @@ class FocusItApp:
                            activebackground=BG, activeforeground=TEXT,
                            selectcolor=CARD, font=("Segoe UI", 10)).pack(
                                padx=22, anchor="w", pady=2)
-        tk.Button(f, text="💾 Zapisz ustawienia", bg=ACCENT, fg="white",
+
+        theme_box = tk.LabelFrame(f, text=" Motyw interfejsu ", bg=BG,
+                                  fg=ACCENT, font=("Segoe UI", 10, "bold"))
+        theme_box.pack(fill="x", padx=22, pady=10)
+        self.set_theme = tk.StringVar(value=self.store.settings.get("theme", "neon"))
+        tk.Radiobutton(theme_box, text="⬢ Neon Honeycomb — matowa czerń i zielone neony",
+                       value="neon", variable=self.set_theme, bg=BG, fg=TEXT,
+                       activebackground=BG, activeforeground=TEXT,
+                       selectcolor=CARD, font=("Segoe UI", 10, "bold")).pack(
+                           padx=14, pady=(8, 2), anchor="w")
+        tk.Radiobutton(theme_box, text="Klasyczny — grafit i fiolet",
+                       value="classic", variable=self.set_theme, bg=BG, fg=TEXT,
+                       activebackground=BG, activeforeground=TEXT,
+                       selectcolor=CARD, font=("Segoe UI", 10)).pack(
+                           padx=14, anchor="w")
+        tk.Label(theme_box, text="Zmiana motywu wymaga ponownego uruchomienia programu.",
+                 bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(
+                     padx=14, pady=(2, 8), anchor="w")
+
+        tk.Button(f, text="💾 Zapisz ustawienia", bg=ACCENT, fg="#03150A",
                   font=("Segoe UI", 11, "bold"), relief="flat", padx=18, pady=7,
                   cursor="hand2", command=self._save_settings).pack(
                       padx=22, pady=12, anchor="w")
@@ -1286,27 +1369,41 @@ class FocusItApp:
         self.log_box.insert("end", f"[{ts}] {msg}\n")
         self.log_box.see("end")
 
+    def _draw_sidebar(self) -> None:
+        c = self.side_canvas
+        w = max(c.winfo_width(), 225)
+        draw_honeycomb(c, w, 104, r=15)
+        c.create_text(19, 37, anchor="w", text="⚡ FocusIt", fill="#0B2E12",
+                      font=("Segoe UI", 22, "bold"))
+        c.create_text(18, 36, anchor="w", text="⚡ FocusIt", fill="white",
+                      font=("Segoe UI", 22, "bold"))
+        c.create_text(18, 66, anchor="w", text="⬡ 100% mocy dla Twojej gry",
+                      fill=NEON, font=("Segoe UI", 9, "bold"))
+        c.create_text(18, 86, anchor="w", text="NEON HONEYCOMB // GAME BAR",
+                      fill=MUTED, font=("Consolas", 7))
+
     def _draw_banner(self) -> None:
         c = self.banner
         w = max(c.winfo_width(), 600)
         h = 86
-        c.delete("all")
-        step = 6
-        for x in range(0, w, step):
-            c.create_line(x, 0, x, h, fill=_lerp_color("#2A1650", "#0B3542", x / w),
-                          width=step)
-        c.create_text(22, 26, anchor="w", text="Gotowy do gry?",
-                      fill="white", font=("Segoe UI", 19, "bold"))
-        c.create_text(22, 56, anchor="w",
-                      text="Jeden klik i komputer pracuje tylko dla Twojej gry.",
-                      fill="#C9D4EA", font=("Segoe UI", 10))
+        draw_honeycomb(c, w, h, r=25)
+        # matowa "karta" pod tekstem, żeby był czytelny na wzorze
+        c.create_rectangle(10, 10, 560, h - 10, fill="#070806", outline=BORDER)
+        c.create_text(25, 34, anchor="w", text="Gotowy do gry?", fill="#0B2E12",
+                      font=("Segoe UI", 20, "bold"))
+        c.create_text(24, 33, anchor="w", text="Gotowy do gry?", fill="white",
+                      font=("Segoe UI", 20, "bold"))
+        c.create_text(24, 60, anchor="w",
+                      text="⬡ Jeden klik i komputer pracuje tylko dla Twojej gry.",
+                      fill=NEON, font=("Segoe UI", 10, "bold"))
         active = bool(self.session and self.session.active)
-        pill = GREEN if active else ACCENT
-        label = "● SESJA AKTYWNA" if active else "● GOTOWY"
-        x0 = w - 190
-        c.create_oval(x0, 28, x0 + 12, 40, fill=pill, outline="")
-        c.create_text(x0 + 20, 34, anchor="w", text=label, fill="white",
-                      font=("Segoe UI", 10, "bold"))
+        pill = NEON if active else ACCENT
+        label = "SESJA AKTYWNA" if active else "SYSTEM GOTOWY"
+        x0 = w - 208
+        c.create_rectangle(x0 - 8, 24, w - 14, 48, fill="#070806", outline=pill)
+        c.create_oval(x0, 30, x0 + 11, 41, fill=pill, outline="")
+        c.create_text(x0 + 18, 36, anchor="w", text=label, fill="white",
+                      font=("Segoe UI", 9, "bold"))
 
     def _draw_chart(self) -> None:
         c = self.chart
@@ -1315,8 +1412,8 @@ class FocusItApp:
         c.delete("all")
         for frac in (0.25, 0.5, 0.75):
             y = h * frac
-            c.create_line(0, y, w, y, fill="#242D42")
-        for hist, color in ((self.cpu_hist, ACCENT), (self.ram_hist, GREEN)):
+            c.create_line(0, y, w, y, fill=BORDER)
+        for hist, color in ((self.cpu_hist, NEON), (self.ram_hist, CYAN)):
             if len(hist) < 2:
                 continue
             step = w / (len(hist) - 1)
@@ -1369,7 +1466,7 @@ class FocusItApp:
                 bar = self.stat_bars[key]
                 bw = max(bar.winfo_width(), 60)
                 bar.delete("all")
-                bar.create_rectangle(0, 0, bw, 5, fill="#242D42", outline="")
+                bar.create_rectangle(0, 0, bw, 5, fill=BORDER, outline="")
                 color = GREEN if pct < 60 else (GOLD if pct < 85 else RED)
                 if key == "free":
                     color = GREEN if pct > 25 else RED
@@ -1475,7 +1572,7 @@ class FocusItApp:
             card = tk.Frame(self.preset_radios,
                             bg=ACCENT if selected else CARD,
                             highlightthickness=2,
-                            highlightbackground=ACCENT if selected else "#232C42")
+                            highlightbackground=ACCENT if selected else BORDER)
             card.pack(side="left", padx=4, pady=2)
             widgets = [card]
             for text, size, bold, color in [
@@ -1700,7 +1797,8 @@ class FocusItApp:
         for idx, kind in enumerate(widgets):
             win = tk.Toplevel(self.root)
             win.title(f"FocusIt nakładka: {kind}")
-            win.configure(bg="#0D111A")
+            win.configure(bg="#050705")
+            win.configure(highlightthickness=1, highlightbackground=NEON)
             try:
                 win.overrideredirect(True)      # bez ramki okna
                 win.attributes("-topmost", True)
@@ -1716,15 +1814,15 @@ class FocusItApp:
                 win.geometry(f"245x84+{x}+{y}")
             except tk.TclError:
                 pass
-            head = tk.Label(win, text="⚡ FocusIt", bg="#0D111A", fg=CYAN,
+            head = tk.Label(win, text="⬡ FocusIt", bg="#050705", fg=NEON,
                             font=("Segoe UI", 8, "bold"))
             head.pack(anchor="w", padx=10, pady=(6, 0))
-            lbl = tk.Label(win, text="…", bg="#0D111A", fg=TEXT,
+            lbl = tk.Label(win, text="…", bg="#050705", fg=TEXT,
                            font=("Segoe UI", 11, "bold"), justify="left")
             lbl.pack(anchor="w", padx=10)
             self._overlay_labels[kind] = lbl
             if kind == "przyciski":
-                brow = tk.Frame(win, bg="#0D111A")
+                brow = tk.Frame(win, bg="#050705")
                 brow.pack(anchor="w", padx=8, pady=3)
                 tk.Button(brow, text="■ Koniec sesji", bg=RED, fg="white",
                           relief="flat", padx=8, pady=2, cursor="hand2",
@@ -2005,6 +2103,8 @@ class FocusItApp:
         self.set_updates.set(s.get("check_updates", True))
         self.set_ov_enabled.set(s.get("overlay_enabled", True))
         self.set_ov_click.set(s.get("overlay_clickthrough", False))
+        if hasattr(self, "set_theme"):
+            self.set_theme.set(s.get("theme", "neon"))
 
     def _save_settings(self) -> None:
         s = self.store.settings
@@ -2021,7 +2121,13 @@ class FocusItApp:
         s["check_updates"] = self.set_updates.get()
         s["overlay_enabled"] = self.set_ov_enabled.get()
         s["overlay_clickthrough"] = self.set_ov_click.get()
+        old_theme = s.get("theme", "neon")
+        if hasattr(self, "set_theme"):
+            s["theme"] = self.set_theme.get()
         self.store.save()
+        if hasattr(self, "set_theme") and s.get("theme") != old_theme:
+            messagebox.showinfo("FocusIt", "Motyw zapisany. Uruchom program "
+                                           "ponownie, aby zobaczyć nowy wygląd.")
         self.sim_var.set(s["simulation_by_default"])
         self.log("Zapisano ustawienia.")
         messagebox.showinfo("FocusIt", "Ustawienia zapisane.")
